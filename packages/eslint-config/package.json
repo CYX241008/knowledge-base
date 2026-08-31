@@ -1,0 +1,17 @@
+{
+  "name": "@knowledge-base/eslint-config",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": { "./base": "./base.js", "./next": "./next.js" },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "eslint-config-prettier": "catalog:",
+    "eslint-plugin-react": "catalog:",
+    "eslint-plugin-react-hooks": "catalog:",
+    "eslint-plugin-turbo": "catalog:",
+    "globals": "catalog:",
+    "typescript-eslint": "catalog:"
+  }
+}

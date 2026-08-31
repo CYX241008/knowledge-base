@@ -1,0 +1,44 @@
+{
+  "name": "@knowledge-base/api",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "lint": "eslint src",
+    "check-types": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@knowledge-base/config": "workspace:*",
+    "@knowledge-base/contracts": "workspace:*",
+    "@knowledge-base/database": "workspace:*",
+    "@knowledge-base/domain": "workspace:*",
+    "@knowledge-base/model-gateway": "workspace:*",
+    "@knowledge-base/object-storage": "workspace:*",
+    "@knowledge-base/observability": "workspace:*",
+    "@knowledge-base/rag": "workspace:*",
+    "@nestjs/bullmq": "catalog:",
+    "@nestjs/common": "catalog:",
+    "@nestjs/config": "catalog:",
+    "@nestjs/core": "catalog:",
+    "@nestjs/platform-express": "catalog:",
+    "@nestjs/typeorm": "catalog:",
+    "bullmq": "catalog:",
+    "jose": "catalog:",
+    "reflect-metadata": "catalog:",
+    "rxjs": "catalog:",
+    "typeorm": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@knowledge-base/eslint-config": "workspace:*",
+    "@knowledge-base/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

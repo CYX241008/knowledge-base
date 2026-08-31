@@ -1,0 +1,44 @@
+{
+  "name": "knowledge-base",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "build:packages": "turbo run build --filter='./packages/*'",
+    "dev": "pnpm run build:packages && turbo run dev --parallel",
+    "dev:web": "pnpm --filter @knowledge-base/web dev",
+    "dev:api": "pnpm --filter @knowledge-base/api dev",
+    "dev:worker": "pnpm --filter @knowledge-base/worker dev",
+    "lint": "turbo run lint",
+    "check-types": "pnpm run build:packages && turbo run check-types",
+    "test": "pnpm run build:packages && turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,yaml,yml,md,css}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,yaml,yml,md,css}\"",
+    "db:migrate": "pnpm --filter @knowledge-base/database migrate",
+    "db:revert": "pnpm --filter @knowledge-base/database migrate:revert",
+    "e2e:rag": "node scripts/e2e-rag-answer.mjs",
+    "e2e:access": "node scripts/e2e-access-control.mjs",
+    "e2e:knowledge": "node scripts/e2e-knowledge-organization.mjs",
+    "e2e:search-governance": "node scripts/e2e-search-governance.mjs",
+    "e2e:system-governance": "node scripts/e2e-system-governance.mjs",
+    "e2e:model-quota": "node scripts/e2e-model-global-quota.mjs",
+    "eval:rag": "node scripts/evaluate-rag.mjs",
+    "verify:staging": "node scripts/verify-staging-integrations.mjs",
+    "ops:backup": "bash scripts/ops/backup.sh",
+    "ops:restore": "bash scripts/ops/restore.sh",
+    "drill:dependency": "bash scripts/ops/drill-dependency-failure.sh",
+    "drill:restore": "bash scripts/ops/drill-backup-restore.sh",
+    "infra:up": "docker compose -f infra/compose/compose.yaml up -d",
+    "infra:down": "docker compose -f infra/compose/compose.yaml down"
+  },
+  "devDependencies": {
+    "eslint": "catalog:",
+    "prettier": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

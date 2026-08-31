@@ -1,0 +1,34 @@
+{
+  "name": "@knowledge-base/database",
+  "private": true,
+  "version": "0.0.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check-types": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src",
+    "test": "vitest run --passWithNoTests",
+    "migrate": "tsx src/migrate.ts",
+    "migrate:revert": "tsx src/migrate-revert.ts"
+  },
+  "dependencies": {
+    "@knowledge-base/contracts": "workspace:*",
+    "pg": "catalog:",
+    "reflect-metadata": "catalog:",
+    "typeorm": "catalog:"
+  },
+  "devDependencies": {
+    "@knowledge-base/eslint-config": "workspace:*",
+    "@knowledge-base/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
