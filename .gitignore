@@ -9,4 +9,5 @@ coverage
 .DS_Store
 *.log
 backups/
+.tmp/
 .pnpm-store/

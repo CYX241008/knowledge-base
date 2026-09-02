@@ -87,6 +87,8 @@ export class AnswersService {
       principalIds: auth.principalIds,
       source: 'answer',
       signal,
+      includeDiagnostics: input.includeDiagnostics,
+      recordQuery: !input.includeDiagnostics,
     });
     const relevantHits = search.hits.filter(
       (hit) => hit.score > this.config.getOrThrow('RAG_MIN_RELEVANCE'),
@@ -123,6 +125,7 @@ export class AnswersService {
       grounded: citations.length > 0,
       model,
       citations,
+      ...(search.diagnostics ? { retrievalDiagnostics: search.diagnostics } : {}),
     };
     await this.persistAnswer(auth, response);
     yield { type: 'done', response };

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
 import type {
   SearchDocumentHit,
+  SearchDiagnostics,
   SearchDocumentsRequest,
   SearchDocumentsResponse,
   SearchFacets,
@@ -35,6 +36,7 @@ type SearchCommand = SearchDocumentsRequest & {
   principalIds: string[];
   source?: SearchQuerySource;
   signal?: AbortSignal;
+  recordQuery?: boolean;
 };
 
 type ChunkRow = {
@@ -107,6 +109,17 @@ export class SearchService {
 
   async search(input: SearchCommand): Promise<SearchDocumentsResponse> {
     const startedAt = Date.now();
+    const timingsMs: SearchDiagnostics['timingsMs'] = {
+      settings: 0,
+      embedding: 0,
+      vector: 0,
+      keyword: 0,
+      fusion: 0,
+      hydration: 0,
+      rerank: 0,
+      total: 0,
+    };
+    const settingsStartedAt = Date.now();
     const settings = this.systemGovernance
       ? await this.systemGovernance.effectiveSettings(input.tenantId)
       : {
@@ -116,20 +129,25 @@ export class SearchService {
           feedbackEnabled: true,
           auditRetentionDays: 365,
         };
+    timingsMs.settings = Date.now() - settingsStartedAt;
     const candidateLimit = settings.candidateLimit;
     let vectorCandidateCount = 0;
     let keywordCandidateCount = 0;
     try {
+      const embeddingStartedAt = Date.now();
       const [queryVector] = await this.embedding.embed({
         model: this.embeddingModel,
         inputs: [input.text],
         dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
         signal: input.signal,
       });
+      timingsMs.embedding = Date.now() - embeddingStartedAt;
       if (!queryVector) throw new Error('Embedding model returned no query vector');
       const vectorLiteral = `[${queryVector.join(',')}]`;
-      const [vectorHits, keywordHits] = await Promise.all([
-        this.dataSource.query<RankedChunk[]>(
+      const vectorStartedAt = Date.now();
+      const keywordStartedAt = Date.now();
+      const vectorPromise = this.dataSource
+        .query<RankedChunk[]>(
           `
           SELECT chunk.id,
                  1 - (chunk.embedding <=> $1::vector) AS score
@@ -164,30 +182,61 @@ export class SearchService {
             input.folderId ?? null,
             input.tagIds ?? [],
           ],
-        ),
-        this.keywordIndex.search(input.tenantId, input.principalIds, input.text, candidateLimit, {
+        )
+        .finally(() => {
+          timingsMs.vector = Date.now() - vectorStartedAt;
+        });
+      const keywordPromise = this.keywordIndex
+        .search(input.tenantId, input.principalIds, input.text, candidateLimit, {
           spaceId: input.spaceId,
           folderId: input.folderId,
           tagIds: input.tagIds,
-        }),
-      ]);
+        })
+        .finally(() => {
+          timingsMs.keyword = Date.now() - keywordStartedAt;
+        });
+      const [vectorHits, keywordHits] = await Promise.all([vectorPromise, keywordPromise]);
       vectorCandidateCount = vectorHits.length;
       keywordCandidateCount = keywordHits.length;
+      const fusionStartedAt = Date.now();
       const fused = reciprocalRankFusion([vectorHits, keywordHits]);
-      const candidateIds = fused.slice(0, candidateLimit).map((hit) => hit.id);
+      const fusedCandidates = fused.slice(0, candidateLimit);
+      timingsMs.fusion = Date.now() - fusionStartedAt;
+      const candidateIds = fusedCandidates.map((hit) => hit.id);
       if (candidateIds.length === 0) {
-        const response = this.emptyResponse(input, Date.now() - startedAt);
-        response.queryEventId = await this.recordQuery(
-          input,
-          response.total,
-          response.durationMs,
-          0,
-          0,
-          'success',
-        );
+        const durationMs = Date.now() - startedAt;
+        timingsMs.total = durationMs;
+        const response = this.emptyResponse(input, durationMs);
+        if (input.includeDiagnostics) {
+          response.diagnostics = buildDiagnostics(
+            candidateLimit,
+            settings.scoreThreshold,
+            timingsMs,
+            vectorHits,
+            keywordHits,
+            [],
+            [],
+            [],
+            new Map(),
+          );
+        }
+        if (input.recordQuery !== false) {
+          response.queryEventId = await this.recordQuery(
+            input,
+            response.total,
+            response.durationMs,
+            0,
+            0,
+            'success',
+          );
+        }
         return response;
       }
 
+      const hydrationIds = input.includeDiagnostics
+        ? [...new Set([...vectorHits, ...keywordHits].map((hit) => hit.id))]
+        : candidateIds;
+      const hydrationStartedAt = Date.now();
       const rows = await this.dataSource.query<ChunkRow[]>(
         `
         SELECT chunk.id AS "chunkId",
@@ -232,9 +281,9 @@ export class SearchService {
                 AND tagged.tag_id = ANY($6::uuid[])
             ) = cardinality($6::uuid[])
           )
-      `,
+        `,
         [
-          candidateIds,
+          hydrationIds,
           input.tenantId,
           input.principalIds,
           input.spaceId ?? null,
@@ -242,32 +291,10 @@ export class SearchService {
           input.tagIds ?? [],
         ],
       );
+      timingsMs.hydration = Date.now() - hydrationStartedAt;
       const byId = new Map(rows.map((row) => [row.chunkId, row]));
-      const hits = fused
-        .map((ranked) => {
-          const row = byId.get(ranked.id);
-          if (!row) return null;
-          return {
-            chunkId: row.chunkId,
-            documentId: row.documentId,
-            documentVersionId: row.documentVersionId,
-            title: row.title,
-            content: row.content,
-            score: ranked.score,
-            source: {
-              type: row.anchorType,
-              page: row.pageNo,
-              slide: row.slideNo,
-              sheet: row.sheetName,
-              rowStart: row.rowStart,
-              rowEnd: row.rowEnd,
-              heading: row.heading,
-              offsetStart: row.offsetStart,
-              offsetEnd: row.offsetEnd,
-            },
-          } satisfies SearchDocumentHit;
-        })
-        .filter((hit): hit is SearchDocumentHit => hit !== null);
+      const hits = hydrateRankedHits(fusedCandidates, byId);
+      const rerankStartedAt = Date.now();
       const reranked = await this.reranker.rerank({
         model: this.config.getOrThrow('RERANKER_MODEL'),
         query: input.text,
@@ -275,16 +302,20 @@ export class SearchService {
         topN: candidateLimit,
         signal: input.signal,
       });
+      timingsMs.rerank = Date.now() - rerankStartedAt;
       const hitsById = new Map(hits.map((hit) => [hit.chunkId, hit]));
-      const rankedHits = reranked
-        .filter((result) => result.score > settings.scoreThreshold)
+      const rerankedHits = reranked
         .map((result) => {
           const hit = hitsById.get(result.id);
           return hit ? { ...hit, score: result.score } : null;
         })
         .filter((hit): hit is SearchDocumentHit => hit !== null);
+      const rankedHits = rerankedHits.filter((hit) => hit.score > settings.scoreThreshold);
       const offset = (input.page - 1) * input.limit;
       const durationMs = Date.now() - startedAt;
+      timingsMs.total = durationMs;
+      const candidateIdSet = new Set(candidateIds);
+      const candidateRows = rows.filter((row) => candidateIdSet.has(row.chunkId));
       const response: SearchDocumentsResponse = {
         queryEventId: null,
         query: input.text,
@@ -293,27 +324,44 @@ export class SearchService {
         page: input.page,
         pageSize: input.limit,
         durationMs,
-        facets: buildFacets(rows),
+        facets: buildFacets(candidateRows),
       };
-      response.queryEventId = await this.recordQuery(
-        input,
-        response.total,
-        durationMs,
-        vectorCandidateCount,
-        keywordCandidateCount,
-        'success',
-      );
+      if (input.includeDiagnostics) {
+        response.diagnostics = buildDiagnostics(
+          candidateLimit,
+          settings.scoreThreshold,
+          timingsMs,
+          vectorHits,
+          keywordHits,
+          fusedCandidates,
+          reranked,
+          rankedHits,
+          byId,
+        );
+      }
+      if (input.recordQuery !== false) {
+        response.queryEventId = await this.recordQuery(
+          input,
+          response.total,
+          durationMs,
+          vectorCandidateCount,
+          keywordCandidateCount,
+          'success',
+        );
+      }
       return response;
     } catch (error) {
-      await this.recordQuery(
-        input,
-        0,
-        Date.now() - startedAt,
-        vectorCandidateCount,
-        keywordCandidateCount,
-        'failed',
-        errorCode(error),
-      );
+      if (input.recordQuery !== false) {
+        await this.recordQuery(
+          input,
+          0,
+          Date.now() - startedAt,
+          vectorCandidateCount,
+          keywordCandidateCount,
+          'failed',
+          errorCode(error),
+        );
+      }
       throw error;
     }
   }
@@ -498,6 +546,69 @@ function countFacets(ids: string[]): Array<{ id: string; count: number }> {
   return [...counts.entries()]
     .map(([id, count]) => ({ id, count }))
     .sort((left, right) => right.count - left.count || left.id.localeCompare(right.id));
+}
+
+function hydrateRankedHits(
+  ranking: RankedChunk[],
+  byId: Map<string, ChunkRow>,
+): SearchDocumentHit[] {
+  return ranking
+    .map((ranked) => {
+      const row = byId.get(ranked.id);
+      if (!row) return null;
+      return {
+        chunkId: row.chunkId,
+        documentId: row.documentId,
+        documentVersionId: row.documentVersionId,
+        title: row.title,
+        content: row.content,
+        score: ranked.score,
+        source: {
+          type: row.anchorType,
+          page: row.pageNo,
+          slide: row.slideNo,
+          sheet: row.sheetName,
+          rowStart: row.rowStart,
+          rowEnd: row.rowEnd,
+          heading: row.heading,
+          offsetStart: row.offsetStart,
+          offsetEnd: row.offsetEnd,
+        },
+      } satisfies SearchDocumentHit;
+    })
+    .filter((hit): hit is SearchDocumentHit => hit !== null);
+}
+
+function buildDiagnostics(
+  candidateLimit: number,
+  scoreThreshold: number,
+  timingsMs: SearchDiagnostics['timingsMs'],
+  vectorHits: RankedChunk[],
+  keywordHits: RankedChunk[],
+  fusedHits: RankedChunk[],
+  rerankedHits: RankedChunk[],
+  selectedHits: SearchDocumentHit[],
+  byId: Map<string, ChunkRow>,
+): SearchDiagnostics {
+  const stage = (ranking: RankedChunk[]) => ({
+    candidateCount: ranking.length,
+    hits: hydrateRankedHits(ranking, byId),
+  });
+  return {
+    candidateLimit,
+    scoreThreshold,
+    timingsMs: { ...timingsMs },
+    stages: {
+      vector: stage(vectorHits),
+      keyword: stage(keywordHits),
+      rrf: stage(fusedHits),
+      reranked: stage(rerankedHits),
+      selected: {
+        candidateCount: selectedHits.length,
+        hits: selectedHits,
+      },
+    },
+  };
 }
 
 function errorCode(error: unknown): string {

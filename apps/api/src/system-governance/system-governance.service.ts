@@ -87,6 +87,7 @@ export class SystemGovernanceService {
         rerankerModel: this.config.getOrThrow('RERANKER_MODEL'),
         modelRequestTimeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
         modelRequestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
+        ragMinRelevance: this.config.getOrThrow('RAG_MIN_RELEVANCE'),
         maxUploadSizeBytes: this.config.getOrThrow('MAX_UPLOAD_SIZE_BYTES'),
         chatRetentionDays: this.config.getOrThrow('CHAT_RETENTION_DAYS'),
         elasticsearchIndex: this.config.getOrThrow('ELASTICSEARCH_INDEX'),

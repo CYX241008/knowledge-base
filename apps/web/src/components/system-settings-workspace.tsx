@@ -475,6 +475,7 @@ function RuntimeTable({ runtime }: { runtime: SystemRuntimeConfiguration }): Rea
     ['向量模型', runtime.embeddingModel],
     ['对话模型', runtime.chatModel],
     ['重排服务', `${runtime.rerankerProvider} / ${runtime.rerankerModel}`],
+    ['问答相关性阈值', runtime.ragMinRelevance.toString()],
     ['模型超时', `${runtime.modelRequestTimeoutMs.toLocaleString('zh-CN')} ms`],
     ['请求限额', `${runtime.modelRequestsPerMinute.toLocaleString('zh-CN')} 次/分钟`],
     ['上传上限', formatBytes(runtime.maxUploadSizeBytes)],

@@ -307,6 +307,7 @@ export const SearchDocumentsRequestSchema = z.object({
   spaceId: z.string().uuid().optional(),
   folderId: z.string().uuid().optional(),
   tagIds: z.array(z.string().uuid()).max(20).optional(),
+  includeDiagnostics: z.boolean().optional(),
 });
 export type SearchDocumentsRequest = z.infer<typeof SearchDocumentsRequestSchema>;
 
@@ -334,6 +335,35 @@ export const SearchDocumentHitSchema = z.object({
 });
 export type SearchDocumentHit = z.infer<typeof SearchDocumentHitSchema>;
 
+export const SearchDiagnosticsStageSchema = z.object({
+  candidateCount: z.number().int().nonnegative(),
+  hits: z.array(SearchDocumentHitSchema),
+});
+export type SearchDiagnosticsStage = z.infer<typeof SearchDiagnosticsStageSchema>;
+
+export const SearchDiagnosticsSchema = z.object({
+  candidateLimit: z.number().int().positive(),
+  scoreThreshold: z.number().nonnegative(),
+  timingsMs: z.object({
+    settings: z.number().int().nonnegative(),
+    embedding: z.number().int().nonnegative(),
+    vector: z.number().int().nonnegative(),
+    keyword: z.number().int().nonnegative(),
+    fusion: z.number().int().nonnegative(),
+    hydration: z.number().int().nonnegative(),
+    rerank: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }),
+  stages: z.object({
+    vector: SearchDiagnosticsStageSchema,
+    keyword: SearchDiagnosticsStageSchema,
+    rrf: SearchDiagnosticsStageSchema,
+    reranked: SearchDiagnosticsStageSchema,
+    selected: SearchDiagnosticsStageSchema,
+  }),
+});
+export type SearchDiagnostics = z.infer<typeof SearchDiagnosticsSchema>;
+
 export const SearchFacetValueSchema = z.object({
   id: z.string().uuid(),
   count: z.number().int().nonnegative(),
@@ -356,6 +386,7 @@ export const SearchDocumentsResponseSchema = z.object({
   pageSize: z.number().int().positive(),
   durationMs: z.number().int().nonnegative(),
   facets: SearchFacetsSchema,
+  diagnostics: SearchDiagnosticsSchema.optional(),
 });
 export type SearchDocumentsResponse = z.infer<typeof SearchDocumentsResponseSchema>;
 
@@ -463,6 +494,7 @@ export const SystemRuntimeConfigurationSchema = z.object({
   rerankerModel: z.string(),
   modelRequestTimeoutMs: z.number().int().positive(),
   modelRequestsPerMinute: z.number().int().nonnegative(),
+  ragMinRelevance: z.number().min(0).max(1),
   maxUploadSizeBytes: z.number().int().positive(),
   chatRetentionDays: z.number().int().positive(),
   elasticsearchIndex: z.string(),
@@ -562,6 +594,7 @@ export const AskQuestionRequestSchema = z.object({
   conversationId: z.string().uuid().optional(),
   question: z.string().trim().min(1).max(4_000),
   limit: z.number().int().min(1).max(12).default(6),
+  includeDiagnostics: z.boolean().optional(),
 });
 export type AskQuestionRequest = z.infer<typeof AskQuestionRequestSchema>;
 
@@ -583,6 +616,7 @@ export const AskQuestionResponseSchema = z.object({
   grounded: z.boolean(),
   model: z.string(),
   citations: z.array(AnswerCitationSchema),
+  retrievalDiagnostics: SearchDiagnosticsSchema.optional(),
 });
 export type AskQuestionResponse = z.infer<typeof AskQuestionResponseSchema>;
 

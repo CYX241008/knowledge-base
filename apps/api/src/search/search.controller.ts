@@ -34,6 +34,7 @@ export class SearchController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<SearchDocumentsResponse>> {
     const input = parseRequest(SearchDocumentsRequestSchema, body);
+    if (input.includeDiagnostics) this.accessControl.assertGovernanceRead(auth);
     return buildSuccess(
       await this.searchService.search({
         ...input,

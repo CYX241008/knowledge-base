@@ -120,8 +120,9 @@ describe('reliable queue contracts', () => {
         principalIds: ['role:reader'],
         text: 'vector retrieval',
         limit: 10,
+        includeDiagnostics: true,
       }),
-    ).toEqual({ text: 'vector retrieval', page: 1, limit: 10 });
+    ).toEqual({ text: 'vector retrieval', page: 1, limit: 10, includeDiagnostics: true });
   });
 
   it('requires a query event identity in search responses', () => {
@@ -136,6 +137,31 @@ describe('reliable queue contracts', () => {
       facets: { spaces: [], folders: [], tags: [] },
     };
     expect(SearchDocumentsResponseSchema.safeParse(response).success).toBe(true);
+    expect(
+      SearchDocumentsResponseSchema.safeParse({
+        ...response,
+        diagnostics: {
+          candidateLimit: 200,
+          scoreThreshold: 0.2,
+          timingsMs: {
+            settings: 1,
+            embedding: 2,
+            vector: 3,
+            keyword: 4,
+            fusion: 1,
+            hydration: 2,
+            rerank: 5,
+            total: 12,
+          },
+          stages: Object.fromEntries(
+            ['vector', 'keyword', 'rrf', 'reranked', 'selected'].map((stage) => [
+              stage,
+              { candidateCount: 0, hits: [] },
+            ]),
+          ),
+        },
+      }).success,
+    ).toBe(true);
     expect(
       SearchDocumentsResponseSchema.safeParse({ ...response, queryEventId: undefined }).success,
     ).toBe(false);

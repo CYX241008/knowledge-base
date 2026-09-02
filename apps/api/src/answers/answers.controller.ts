@@ -22,6 +22,7 @@ import {
   type DeleteConversationResponse,
 } from '@knowledge-base/contracts';
 import type { AuthContext } from '../auth/auth-context';
+import { AccessControlService } from '../access-control/access-control.service';
 import { AuthenticationGuard } from '../auth/authentication.guard';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { parseRequest } from '../common/validation';
@@ -45,6 +46,7 @@ export class AnswersController {
   constructor(
     @Inject(AnswersService) private readonly answersService: AnswersService,
     @Inject(ConversationsService) private readonly conversationsService: ConversationsService,
+    @Inject(AccessControlService) private readonly accessControl: AccessControlService,
   ) {}
 
   @Get('conversations')
@@ -78,9 +80,9 @@ export class AnswersController {
     @Body() body: unknown,
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<AskQuestionResponse>> {
-    return buildSuccess(
-      await this.answersService.answer(auth, parseRequest(AskQuestionRequestSchema, body)),
-    );
+    const input = parseRequest(AskQuestionRequestSchema, body);
+    if (input.includeDiagnostics) this.accessControl.assertGovernanceRead(auth);
+    return buildSuccess(await this.answersService.answer(auth, input));
   }
 
   @Post('stream')
@@ -90,6 +92,8 @@ export class AnswersController {
     @CurrentAuth() auth: AuthContext,
     @Res() response: StreamingResponse,
   ): Promise<void> {
+    const input = parseRequest(AskQuestionRequestSchema, body);
+    if (input.includeDiagnostics) this.accessControl.assertGovernanceRead(auth);
     response.setHeader('Cache-Control', 'no-cache, no-transform');
     response.setHeader('Connection', 'keep-alive');
     response.setHeader('X-Accel-Buffering', 'no');
@@ -100,7 +104,7 @@ export class AnswersController {
     try {
       for await (const event of this.answersService.streamAnswer(
         auth,
-        parseRequest(AskQuestionRequestSchema, body),
+        input,
         abortController.signal,
       )) {
         if (abortController.signal.aborted || response.destroyed) break;

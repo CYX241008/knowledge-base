@@ -81,5 +81,9 @@ export type {
   RagEvaluationCaseResult,
   RagEvaluationCategory,
   RagEvaluationObservation,
+  RagEvaluationOptions,
+  RagEvaluationRelevantChunk,
   RagEvaluationReport,
+  RagEvaluationRetrievalDiagnostics,
+  RagEvaluationStage,
 } from './evaluation';
