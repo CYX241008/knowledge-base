@@ -130,6 +130,10 @@ export class SearchProjectionService {
   }
 
   async indexKeywords(document: DocumentEntity, versionId: string): Promise<number> {
+    if (!isPublishedSearchVersion(document, versionId)) {
+      await this.keywordIndex.deleteDocument(document.tenantId, document.id);
+      return 0;
+    }
     const [chunks, tagRows] = await Promise.all([
       this.chunkRepository.find({
         where: { documentVersionId: versionId, tenantId: document.tenantId },
@@ -144,14 +148,16 @@ export class SearchProjectionService {
       ),
     ]);
     const tagIds = tagRows.map((row) => row.tagId);
-    await this.keywordIndex.replaceVersion(
-      versionId,
+    await this.keywordIndex.replaceDocument(
+      document.tenantId,
+      document.id,
       chunks.map((chunk) => ({
         id: chunk.id,
         tenantId: chunk.tenantId,
         principalIds: chunk.principalIds,
         documentId: chunk.documentId,
         documentVersionId: chunk.documentVersionId,
+        documentStatus: 'published',
         spaceId: document.spaceId,
         folderId: document.folderId,
         tagIds,
@@ -175,6 +181,9 @@ export class SearchProjectionService {
       .where('version.ingestionStatus = :status', { status: 'ready' })
       .andWhere('version.markdownObjectKey IS NOT NULL')
       .andWhere('document.deletedAt IS NULL');
+    query
+      .andWhere('document.status = :documentStatus', { documentStatus: 'published' })
+      .andWhere('document.currentReadyVersionId = version.id');
     if (tenantId) query.andWhere('version.tenantId = :tenantId', { tenantId });
     const versions = await query.orderBy('version.createdAt', 'ASC').getMany();
     let chunkCount = 0;
@@ -204,6 +213,13 @@ export class SearchProjectionService {
     }
     return { versions: versions.length, chunks: chunkCount };
   }
+}
+
+export function isPublishedSearchVersion(
+  document: Pick<DocumentEntity, 'status' | 'currentReadyVersionId'>,
+  versionId: string,
+): boolean {
+  return document.status === 'published' && document.currentReadyVersionId === versionId;
 }
 
 function entityAnchor(chunk: DocumentChunkEntity): SourceAnchor {

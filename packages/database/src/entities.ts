@@ -2,6 +2,8 @@ import type {
   AccessPermissionKey,
   AccessPrincipalType,
   DocumentStatus,
+  DocumentReviewAction,
+  DocumentReviewStatus,
   IngestionStatus,
   OutboxEventType,
   SearchFeedbackRating,
@@ -739,6 +741,72 @@ export class DocumentChunkEntity {
   createdAt!: Date;
 }
 
+@Entity('document_review_request')
+@Index(['tenantId', 'status', 'submittedAt'])
+@Index(['tenantId', 'documentId', 'submittedAt'])
+export class DocumentReviewRequestEntity {
+  @PrimaryColumn('uuid')
+  id!: string;
+
+  @Column('uuid', { name: 'tenant_id' })
+  tenantId!: string;
+
+  @Column('uuid', { name: 'document_id' })
+  documentId!: string;
+
+  @Column('uuid', { name: 'document_version_id' })
+  documentVersionId!: string;
+
+  @Column('varchar', { length: 32, default: 'pending' })
+  status!: DocumentReviewStatus;
+
+  @Column('uuid', { name: 'submitted_by' })
+  submittedBy!: string;
+
+  @Column('timestamptz', { name: 'submitted_at', default: () => 'CURRENT_TIMESTAMP' })
+  submittedAt!: Date;
+
+  @Column('uuid', { name: 'resolved_by', nullable: true })
+  resolvedBy!: string | null;
+
+  @Column('timestamptz', { name: 'resolved_at', nullable: true })
+  resolvedAt!: Date | null;
+
+  @Column('text', { name: 'decision_comment', nullable: true })
+  decisionComment!: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt!: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt!: Date;
+}
+
+@Entity('document_review_action')
+@Index(['reviewRequestId', 'createdAt'])
+export class DocumentReviewActionEntity {
+  @PrimaryColumn('uuid')
+  id!: string;
+
+  @Column('uuid', { name: 'tenant_id' })
+  tenantId!: string;
+
+  @Column('uuid', { name: 'review_request_id' })
+  reviewRequestId!: string;
+
+  @Column('varchar', { length: 32 })
+  action!: DocumentReviewAction;
+
+  @Column('uuid', { name: 'actor_id' })
+  actorId!: string;
+
+  @Column('text', { nullable: true })
+  comment!: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt!: Date;
+}
+
 @Entity('chat_conversation')
 @Index(['tenantId', 'createdBy', 'updatedAt'])
 export class ChatConversationEntity {
@@ -997,6 +1065,8 @@ export const databaseEntities = [
   DocumentSourceAnchorEntity,
   DocumentAssetEntity,
   DocumentChunkEntity,
+  DocumentReviewRequestEntity,
+  DocumentReviewActionEntity,
   ChatConversationEntity,
   ChatMessageEntity,
   ChatCitationEntity,

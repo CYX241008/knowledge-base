@@ -25,7 +25,7 @@ export class DocumentAclProjectionProcessor extends WorkerHost {
 
   async process(
     job: Job<DocumentAclProjectionJob>,
-  ): Promise<{ status: 'projected' | 'missing' | 'not-ready'; chunks: number }> {
+  ): Promise<{ status: 'projected' | 'missing' | 'not-published'; chunks: number }> {
     const data = DocumentAclProjectionJobSchema.parse(job.data);
     const document = await this.documentRepository.findOneBy({
       id: data.documentId,
@@ -37,7 +37,10 @@ export class DocumentAclProjectionProcessor extends WorkerHost {
         `Document ACL version ${document.aclVersion} is behind job ${data.aclVersion}`,
       );
     }
-    if (!document.currentReadyVersionId) return { status: 'not-ready', chunks: 0 };
+    if (document.status !== 'published' || !document.currentReadyVersionId) {
+      await this.searchProjection.deleteKeywordDocument(document.tenantId, document.id);
+      return { status: 'not-published', chunks: 0 };
+    }
 
     const chunks = await this.searchProjection.indexKeywords(
       document,

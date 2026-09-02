@@ -19,9 +19,11 @@ pnpm dev
 
 打开 Web 后可以上传 `.txt`、`.md`、`.markdown`、`.docx`、`.pdf`、`.xlsx` 或 `.pptx` 文件（最大 50 MB）。DOCX 保留标题、列表、表格和链接；PDF 生成页边界与页码锚点；XLSX 保留 Sheet、表格、公式缓存结果和合并单元格主值；PPTX 保留幻灯片标题、正文和表格。内嵌图片存入私有 `document_asset`，读取 Markdown 时才生成短期签名地址。工作台的知识问答按 SSE 流式输出，并可从引用直接跳到对应文档预览。
 
-处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。新版本就绪不会覆盖已有的当前版本，只有发布接口会原子切换 `current_ready_version_id`。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
+处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
 
-检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合后再重排。两个召回查询都会下推租户和有效主体过滤，最终只返回逻辑文档当前版本。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
+检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合后再重排。两个召回查询都会下推租户、有效主体和 `published` 状态过滤，最终只返回逻辑文档当前发布版本。待审新版本不会替换或隐藏旧发布版本。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
+
+版本审核绑定不可变的 `document_version`。文档管理员可以提交或撤回待审版本；拥有 `documents.review` 的审核员可以查看租户待办、批准或驳回。批准会在同一 PostgreSQL 事务中结案审核、切换发布版本、记录审计并写入搜索投影 Outbox。
 
 独立全文搜索页位于 `/search`，支持 URL 查询状态、空间/文件夹/标签 Facet、固定候选窗口分页、来源定位和命中高亮。知识管理员可在同页查看近 7/30/90 天查询量、零结果率、平均/P95 耗时、高频词和最近查询；搜索与知识问答触发的检索会分别记录。
 
@@ -86,11 +88,25 @@ pnpm eval:rag
 pnpm --filter @knowledge-base/worker search:rebuild -- <tenantId>
 ```
 
+升级到版本审核与发布可见性规则后，应执行一次搜索重建，为已有 Elasticsearch 文档补充发布状态并移除非当前版本。
+
+版本审核、草稿/待审/归档检索隔离验收：
+
+```bash
+pnpm e2e:document-review
+```
+
 核心接口包括：
 
 - `POST /api/documents/uploads`：创建文档和版本，返回预签名上传信息。
 - `POST /api/documents/:documentId/versions/:versionId/complete`：确认上传并幂等投递任务。
 - `POST /api/documents/:documentId/versions/:versionId/publish`：发布就绪版本并原子切换当前版本。
+- `POST /api/documents/:documentId/versions/:versionId/reviews`：提交就绪版本审核。
+- `POST /api/documents/:documentId/versions/:versionId/reviews/withdraw`：撤回当前待审版本。
+- `GET /api/documents/:documentId/reviews/history`：读取文档版本审核历史和操作记录。
+- `GET /api/reviews/tasks`：分页读取审核待办或历史任务。
+- `POST /api/reviews/tasks/:reviewId/approve`：批准版本并事务性切换发布版本。
+- `POST /api/reviews/tasks/:reviewId/reject`：驳回待审版本。
 - `DELETE /api/documents/:documentId`：归档文档并异步清理对象与引用投影。
 - `GET /api/ingestion/jobs/:jobId`：读取处理阶段和进度。
 - `POST /api/ingestion/jobs/:jobId/retry`：重新处理最终失败的版本。

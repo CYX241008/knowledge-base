@@ -25,7 +25,7 @@ export class DocumentSearchProjectionProcessor extends WorkerHost {
 
   async process(
     job: Job<DocumentSearchProjectionJob>,
-  ): Promise<{ status: 'projected' | 'missing' | 'not-ready'; chunks: number }> {
+  ): Promise<{ status: 'projected' | 'missing' | 'not-published'; chunks: number }> {
     const data = DocumentSearchProjectionJobSchema.parse(job.data);
     const document = await this.documentRepository.findOneBy({
       id: data.documentId,
@@ -37,7 +37,10 @@ export class DocumentSearchProjectionProcessor extends WorkerHost {
         `Document search projection version ${document.searchProjectionVersion} is behind job ${data.projectionVersion}`,
       );
     }
-    if (!document.currentReadyVersionId) return { status: 'not-ready', chunks: 0 };
+    if (document.status !== 'published' || !document.currentReadyVersionId) {
+      await this.searchProjection.deleteKeywordDocument(document.tenantId, document.id);
+      return { status: 'not-published', chunks: 0 };
+    }
 
     const chunks = await this.searchProjection.indexKeywords(
       document,

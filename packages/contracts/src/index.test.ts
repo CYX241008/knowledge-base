@@ -3,6 +3,8 @@ import {
   DocumentAclProjectionJobSchema,
   DocumentIngestionJobSchema,
   DocumentSearchProjectionJobSchema,
+  DocumentReviewQuerySchema,
+  RejectDocumentReviewRequestSchema,
   MoveDocumentRequestSchema,
   ReplaceDocumentAclRequestSchema,
   SearchDocumentsRequestSchema,
@@ -13,6 +15,7 @@ import {
   documentCleanupQueueJobId,
   documentIngestionQueueJobId,
   documentSearchProjectionQueueJobId,
+  accessPermissionKeys,
 } from './index';
 
 describe('reliable queue contracts', () => {
@@ -36,6 +39,28 @@ describe('reliable queue contracts', () => {
         requestedAt: new Date().toISOString(),
       }).success,
     ).toBe(true);
+    expect(
+      DocumentSearchProjectionJobSchema.safeParse({
+        tenantId: '11111111-1111-4111-8111-111111111111',
+        documentId,
+        projectionVersion: 5,
+        reason: 'review-approved',
+        requestedAt: new Date().toISOString(),
+      }).success,
+    ).toBe(true);
+  });
+
+  it('defines review permissions and validates review commands', () => {
+    expect(accessPermissionKeys).toContain('documents.review');
+    expect(DocumentReviewQuerySchema.parse({ status: 'all', page: '2', pageSize: '30' })).toEqual({
+      status: 'all',
+      page: 2,
+      pageSize: 30,
+    });
+    expect(
+      RejectDocumentReviewRequestSchema.safeParse({ comment: 'Evidence is outdated' }).success,
+    ).toBe(true);
+    expect(RejectDocumentReviewRequestSchema.safeParse({ comment: ' ' }).success).toBe(false);
   });
 
   it('validates ACL projection versions and typed principals', () => {

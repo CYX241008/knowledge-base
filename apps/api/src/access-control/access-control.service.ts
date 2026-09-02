@@ -499,6 +499,18 @@ export class AccessControlService {
     }
   }
 
+  assertDocumentReview(auth: AuthContext): void {
+    if (
+      !auth.principalIds.includes('permission:documents.review') &&
+      !auth.principalIds.includes('permission:access.manage')
+    ) {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_REVIEW_DENIED',
+        message: 'Document review permission is required',
+      });
+    }
+  }
+
   canEditSystemSettings(auth: AuthContext): boolean {
     return (
       auth.principalIds.includes('permission:system.manage') ||

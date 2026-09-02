@@ -15,6 +15,7 @@ import { ObservabilityModule } from './observability/observability.module';
 import { AccessControlModule } from './access-control/access-control.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { SystemGovernanceModule } from './system-governance/system-governance.module';
+import { DocumentReviewsModule } from './reviews/document-reviews.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { SystemGovernanceModule } from './system-governance/system-governance.mo
     AccessControlModule,
     KnowledgeModule,
     SystemGovernanceModule,
+    DocumentReviewsModule,
     DocumentsModule,
     SearchModule,
     AnswersModule,

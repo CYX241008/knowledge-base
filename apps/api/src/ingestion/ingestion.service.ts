@@ -5,6 +5,7 @@ import {
   DOCUMENT_INGESTION_QUEUE,
   MAX_DOCUMENT_INGESTION_ATTEMPTS,
   documentIngestionQueueJobId,
+  type DocumentSearchProjectionReason,
   type DocumentIngestionJob,
   type EnqueueIngestionJobResponse,
   type IngestionCommandResponse,
@@ -191,6 +192,36 @@ export class IngestionService {
         lastError: null,
       }),
     );
+  }
+
+  async createSearchProjectionIntent(
+    manager: EntityManager,
+    document: DocumentEntity,
+    reason: DocumentSearchProjectionReason,
+  ): Promise<void> {
+    document.searchProjectionVersion += 1;
+    await manager.getRepository(DocumentEntity).save(document);
+    await manager.getRepository(OutboxEventEntity).save({
+      id: randomUUID(),
+      tenantId: document.tenantId,
+      aggregateType: 'document',
+      aggregateId: document.id,
+      eventType: 'document.search-projection.requested',
+      deduplicationKey: `document-search:${document.id}:${document.searchProjectionVersion}`,
+      payload: {
+        tenantId: document.tenantId,
+        documentId: document.id,
+        projectionVersion: document.searchProjectionVersion,
+        reason,
+        requestedAt: new Date().toISOString(),
+      },
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: new Date(),
+      lockedAt: null,
+      publishedAt: null,
+      lastError: null,
+    });
   }
 
   dispatchPending(): void {

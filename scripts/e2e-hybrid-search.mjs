@@ -44,6 +44,7 @@ for (let attempt = 0; completed.status !== 'ready' && attempt < 120; attempt += 
   if (attempt === 119) throw new Error('Timed out waiting for document ingestion');
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
 }
+await publishVersion(created.documentId, created.documentVersionId);
 
 const result = await search();
 const hit = result.hits.find((item) => item.documentId === created.documentId);
@@ -74,6 +75,14 @@ async function search() {
       text: '量子凤梨索引',
       limit: 10,
     }),
+  });
+}
+
+async function publishVersion(documentId, versionId) {
+  return request(`${apiBase}/documents/${documentId}/versions/${versionId}/publish`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tenantId }),
   });
 }
 

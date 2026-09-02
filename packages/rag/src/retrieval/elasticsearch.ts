@@ -8,6 +8,7 @@ export type KeywordIndexedChunk = {
   principalIds: string[];
   documentId: string;
   documentVersionId: string;
+  documentStatus: 'published';
   spaceId: string | null;
   folderId: string | null;
   tagIds: string[];
@@ -66,6 +67,24 @@ export class ElasticsearchChunkIndex {
   async replaceVersion(documentVersionId: string, chunks: KeywordIndexedChunk[]): Promise<void> {
     await this.ensureIndex();
     await this.deleteByQuery({ term: { document_version_id: documentVersionId } });
+    await this.bulkIndex(chunks);
+  }
+
+  async replaceDocument(
+    tenantId: string,
+    documentId: string,
+    chunks: KeywordIndexedChunk[],
+  ): Promise<void> {
+    await this.ensureIndex();
+    await this.deleteByQuery({
+      bool: {
+        filter: [{ term: { tenant_id: tenantId } }, { term: { document_id: documentId } }],
+      },
+    });
+    await this.bulkIndex(chunks);
+  }
+
+  private async bulkIndex(chunks: KeywordIndexedChunk[]): Promise<void> {
     if (chunks.length === 0) return;
     const body = chunks
       .flatMap((chunk) => [
@@ -75,6 +94,7 @@ export class ElasticsearchChunkIndex {
           principal_ids: chunk.principalIds,
           document_id: chunk.documentId,
           document_version_id: chunk.documentVersionId,
+          document_status: chunk.documentStatus,
           space_id: chunk.spaceId,
           folder_id: chunk.folderId,
           tag_ids: chunk.tagIds,
@@ -127,6 +147,7 @@ export class ElasticsearchChunkIndex {
     const filter: Record<string, unknown>[] = [
       { term: { tenant_id: tenantId } },
       { terms: { principal_ids: principalIds } },
+      { term: { document_status: 'published' } },
     ];
     if (filters.spaceId) filter.push({ term: { space_id: filters.spaceId } });
     if (filters.folderId) filter.push({ term: { folder_id: filters.folderId } });
@@ -184,6 +205,7 @@ function indexProperties(): Record<string, { type: string }> {
     principal_ids: { type: 'keyword' },
     document_id: { type: 'keyword' },
     document_version_id: { type: 'keyword' },
+    document_status: { type: 'keyword' },
     space_id: { type: 'keyword' },
     folder_id: { type: 'keyword' },
     tag_ids: { type: 'keyword' },

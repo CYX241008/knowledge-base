@@ -138,6 +138,7 @@ export class SearchService {
           WHERE chunk.tenant_id = $2::uuid
             AND chunk.principal_ids && $3::varchar[]
             AND document.deleted_at IS NULL
+            AND document.status = 'published'
             AND document.current_ready_version_id = chunk.document_version_id
             AND ($5::uuid IS NULL OR document.space_id = $5::uuid)
             AND ($6::uuid IS NULL OR document.folder_id = $6::uuid)
@@ -217,6 +218,7 @@ export class SearchService {
           AND chunk.tenant_id = $2::uuid
           AND chunk.principal_ids && $3::varchar[]
           AND document.deleted_at IS NULL
+          AND document.status = 'published'
           AND document.current_ready_version_id = chunk.document_version_id
           AND ($4::uuid IS NULL OR document.space_id = $4::uuid)
           AND ($5::uuid IS NULL OR document.folder_id = $5::uuid)

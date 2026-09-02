@@ -37,6 +37,7 @@ export const accessPermissionKeys = [
   'documents.delete',
   'documents.manage',
   'documents.share',
+  'documents.review',
 ] as const;
 export const AccessPermissionKeySchema = z.enum(accessPermissionKeys);
 export type AccessPermissionKey = z.infer<typeof AccessPermissionKeySchema>;
@@ -122,10 +123,11 @@ export const DocumentSearchProjectionJobSchema = z.object({
   tenantId: z.string().uuid(),
   documentId: z.string().uuid(),
   projectionVersion: z.number().int().positive(),
-  reason: z.enum(['organization', 'tags']),
+  reason: z.enum(['organization', 'tags', 'publish', 'review-approved']),
   requestedAt: z.string().datetime(),
 });
 export type DocumentSearchProjectionJob = z.infer<typeof DocumentSearchProjectionJobSchema>;
+export type DocumentSearchProjectionReason = DocumentSearchProjectionJob['reason'];
 
 export function documentIngestionQueueJobId(versionId: string, generation: number): string {
   return `${versionId}-${generation}`;
@@ -202,8 +204,81 @@ export const PublishDocumentVersionResponseSchema = z.object({
   documentId: z.string().uuid(),
   documentVersionId: z.string().uuid(),
   status: z.literal('published'),
+  projectionStatus: z.literal('queued'),
 });
 export type PublishDocumentVersionResponse = z.infer<typeof PublishDocumentVersionResponseSchema>;
+
+export const documentReviewStatuses = ['pending', 'approved', 'rejected', 'withdrawn'] as const;
+export const DocumentReviewStatusSchema = z.enum(documentReviewStatuses);
+export type DocumentReviewStatus = z.infer<typeof DocumentReviewStatusSchema>;
+
+export const documentReviewActions = ['submitted', 'approved', 'rejected', 'withdrawn'] as const;
+export const DocumentReviewActionSchema = z.enum(documentReviewActions);
+export type DocumentReviewAction = z.infer<typeof DocumentReviewActionSchema>;
+
+export const SubmitDocumentReviewRequestSchema = z.object({
+  comment: z.string().trim().min(1).max(2_000).nullable().optional(),
+});
+export type SubmitDocumentReviewRequest = z.infer<typeof SubmitDocumentReviewRequestSchema>;
+
+export const WithdrawDocumentReviewRequestSchema = z.object({
+  comment: z.string().trim().min(1).max(2_000).nullable().optional(),
+});
+export type WithdrawDocumentReviewRequest = z.infer<typeof WithdrawDocumentReviewRequestSchema>;
+
+export const ApproveDocumentReviewRequestSchema = z.object({
+  comment: z.string().trim().min(1).max(2_000).nullable().optional(),
+});
+export type ApproveDocumentReviewRequest = z.infer<typeof ApproveDocumentReviewRequestSchema>;
+
+export const RejectDocumentReviewRequestSchema = z.object({
+  comment: z.string().trim().min(1).max(2_000),
+});
+export type RejectDocumentReviewRequest = z.infer<typeof RejectDocumentReviewRequestSchema>;
+
+export const DocumentReviewQuerySchema = z.object({
+  status: z.union([DocumentReviewStatusSchema, z.literal('all')]).default('pending'),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type DocumentReviewQuery = z.infer<typeof DocumentReviewQuerySchema>;
+
+export const DocumentReviewActionItemSchema = z.object({
+  id: z.string().uuid(),
+  action: DocumentReviewActionSchema,
+  actorId: z.string().uuid(),
+  actorName: z.string().nullable(),
+  comment: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+export type DocumentReviewActionItem = z.infer<typeof DocumentReviewActionItemSchema>;
+
+export const DocumentReviewItemSchema = z.object({
+  id: z.string().uuid(),
+  documentId: z.string().uuid(),
+  documentVersionId: z.string().uuid(),
+  documentTitle: z.string(),
+  versionNo: z.number().int().positive(),
+  sourceFilename: z.string(),
+  status: DocumentReviewStatusSchema,
+  submittedBy: z.string().uuid(),
+  submittedByName: z.string().nullable(),
+  submittedAt: z.string().datetime(),
+  resolvedBy: z.string().uuid().nullable(),
+  resolvedByName: z.string().nullable(),
+  resolvedAt: z.string().datetime().nullable(),
+  decisionComment: z.string().nullable(),
+  actions: z.array(DocumentReviewActionItemSchema),
+});
+export type DocumentReviewItem = z.infer<typeof DocumentReviewItemSchema>;
+
+export const DocumentReviewListResponseSchema = z.object({
+  items: z.array(DocumentReviewItemSchema),
+  total: z.number().int().nonnegative(),
+  page: z.number().int().positive(),
+  pageSize: z.number().int().positive(),
+});
+export type DocumentReviewListResponse = z.infer<typeof DocumentReviewListResponseSchema>;
 
 export const DeleteDocumentResponseSchema = z.object({
   documentId: z.string().uuid(),

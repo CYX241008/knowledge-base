@@ -15,6 +15,7 @@ import type {
 import {
   DocumentAssetEntity,
   DocumentEntity,
+  DocumentReviewRequestEntity,
   DocumentVersionEntity,
   IngestionJobEntity,
   OutboxEventEntity,
@@ -260,7 +261,7 @@ export class DocumentsService {
     versionId: string,
   ): Promise<PublishDocumentVersionResponse> {
     const tenantId = auth.tenantId;
-    return this.dataSource.transaction(async (manager) => {
+    const response = await this.dataSource.transaction(async (manager) => {
       const documents = manager.getRepository(DocumentEntity);
       const document = await documents.findOne({
         where: { id: documentId, tenantId, deletedAt: IsNull() },
@@ -278,9 +279,20 @@ export class DocumentsService {
           message: 'Only a ready document version can be published',
         });
       }
+      const pendingReview = await manager.getRepository(DocumentReviewRequestEntity).findOne({
+        where: { tenantId, documentId, status: 'pending' },
+        lock: { mode: 'pessimistic_read' },
+      });
+      if (pendingReview) {
+        throw new BadRequestException({
+          code: 'DOCUMENT_REVIEW_PENDING',
+          message: 'A pending review must be approved or rejected before direct publication',
+        });
+      }
       document.currentReadyVersionId = version.id;
       document.status = 'published';
-      await documents.save(document);
+      document.updatedBy = auth.userId;
+      await this.ingestionService.createSearchProjectionIntent(manager, document, 'publish');
       await this.accessControl.recordAudit(
         manager,
         auth,
@@ -289,8 +301,15 @@ export class DocumentsService {
         documentId,
         { documentVersionId: version.id, versionNo: version.versionNo },
       );
-      return { documentId, documentVersionId: version.id, status: 'published' };
+      return {
+        documentId,
+        documentVersionId: version.id,
+        status: 'published' as const,
+        projectionStatus: 'queued' as const,
+      };
     });
+    this.ingestionService.dispatchPending();
+    return response;
   }
 
   async deleteDocument(auth: AuthContext, documentId: string): Promise<DeleteDocumentResponse> {

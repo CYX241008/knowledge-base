@@ -75,6 +75,10 @@ async function uploadDocument(relativePath, title) {
     { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
   );
   await waitForReady(completed);
+  await request(
+    `${apiBase}/documents/${created.documentId}/versions/${created.documentVersionId}/publish`,
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+  );
 }
 
 async function waitForReady(completed) {

@@ -81,6 +81,7 @@ export class DocumentsController {
   ): Promise<ApiResponse<unknown>> {
     parseRequest(TenantCommandRequestSchema, body);
     await this.accessControl.assertDocumentManage(auth, documentId);
+    this.accessControl.assertDocumentReview(auth);
     return buildSuccess(await this.documentsService.publishVersion(auth, documentId, versionId));
   }
 

@@ -58,6 +58,14 @@ try {
     },
   );
   await waitForReady(completed);
+  await request(
+    `${apiBase}/documents/${created.documentId}/versions/${created.documentVersionId}/publish`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    },
+  );
 
   const grounded = await streamAnswer('量子凤梨索引的用途是什么？');
   if (!grounded.grounded) throw new Error('Relevant question was not marked as grounded');

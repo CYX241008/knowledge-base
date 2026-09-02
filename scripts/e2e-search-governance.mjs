@@ -75,6 +75,10 @@ try {
     { method: 'POST', headers: jsonHeaders, body: '{}' },
   );
   await waitForReady(completed.jobId, completed.status);
+  await request(
+    `${apiBase}/documents/${documentId}/versions/${created.documentVersionId}/publish`,
+    { method: 'POST', headers: jsonHeaders, body: '{}' },
+  );
 
   await request(`${apiBase}/knowledge/documents/${documentId}/tags`, {
     method: 'PUT',

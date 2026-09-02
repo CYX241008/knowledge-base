@@ -63,6 +63,10 @@ try {
     },
   );
   await waitForReady(completed.jobId, completed.status);
+  await request(
+    `${apiBase}/documents/${created.documentId}/versions/${created.documentVersionId}/publish`,
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+  );
 
   await expectSearchVisibility(documentId, true);
   await assignRoles(session.userId, systemRoleIds);

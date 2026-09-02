@@ -216,12 +216,9 @@ export class DocumentIngestionProcessor extends WorkerHost {
         null,
         chunkResult.checksum,
       );
-      const indexedChunks = await this.searchProjection.indexKeywords(document, version.id);
-      if (indexedChunks !== chunkResult.count)
-        throw new Error('Keyword and vector projection chunk counts do not match');
       await this.assertRunnable(data);
       const indexChecksum = createHash('sha256')
-        .update(`${chunkResult.checksum}:elasticsearch:${indexedChunks}`)
+        .update(`${chunkResult.checksum}:pgvector:${chunkResult.count}`)
         .digest('hex');
       await this.updateStage(
         data.documentVersionId,
@@ -257,16 +254,6 @@ export class DocumentIngestionProcessor extends WorkerHost {
         lockedVersion.errorCode = null;
         lockedVersion.errorMessage = null;
         await manager.getRepository(DocumentVersionEntity).save(lockedVersion);
-
-        const document = await manager.getRepository(DocumentEntity).findOne({
-          where: { id: data.documentId, tenantId: data.tenantId },
-          lock: { mode: 'pessimistic_write' },
-        });
-        if (!document) throw new Error(`Document ${data.documentId} not found`);
-        if (!document.currentReadyVersionId) {
-          document.currentReadyVersionId = lockedVersion.id;
-          await manager.getRepository(DocumentEntity).save(document);
-        }
 
         lockedJob.status = 'completed';
         lockedJob.progress = 100;

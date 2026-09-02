@@ -24,6 +24,7 @@
     "e2e:knowledge": "node scripts/e2e-knowledge-organization.mjs",
     "e2e:search-governance": "node scripts/e2e-search-governance.mjs",
     "e2e:system-governance": "node scripts/e2e-system-governance.mjs",
+    "e2e:document-review": "node scripts/e2e-document-review.mjs",
     "e2e:model-quota": "node scripts/e2e-model-global-quota.mjs",
     "eval:rag": "node scripts/evaluate-rag.mjs",
     "verify:staging": "node scripts/verify-staging-integrations.mjs",
