@@ -89,6 +89,13 @@ export class SystemGovernanceService {
         nearDuplicateThreshold: this.config.getOrThrow('RAG_NEAR_DUPLICATE_THRESHOLD'),
         modelRequestTimeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
         modelRequestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
+        modelGlobalTokensPerMinute: this.config.getOrThrow('MODEL_GLOBAL_TOKENS_PER_MINUTE'),
+        modelTenantTokensPerMinute: this.config.getOrThrow('MODEL_TENANT_TOKENS_PER_MINUTE'),
+        modelUserTokensPerMinute: this.config.getOrThrow('MODEL_USER_TOKENS_PER_MINUTE'),
+        embeddingTokensPerMinute: this.config.getOrThrow('MODEL_EMBEDDING_TOKENS_PER_MINUTE'),
+        chatTokensPerMinute: this.config.getOrThrow('MODEL_CHAT_TOKENS_PER_MINUTE'),
+        rerankTokensPerMinute: this.config.getOrThrow('MODEL_RERANK_TOKENS_PER_MINUTE'),
+        chatMaxOutputTokens: this.config.getOrThrow('CHAT_MAX_OUTPUT_TOKENS'),
         ragMinRelevance: this.config.getOrThrow('RAG_MIN_RELEVANCE'),
         maxUploadSizeBytes: this.config.getOrThrow('MAX_UPLOAD_SIZE_BYTES'),
         chatRetentionDays: this.config.getOrThrow('CHAT_RETENTION_DAYS'),
@@ -230,7 +237,7 @@ export class SystemGovernanceService {
     const zeroResultQueries = Number(search?.zeroResultQueries ?? 0);
     const feedbackTotal = Number(feedback?.total ?? 0);
     const helpful = Number(feedback?.helpful ?? 0);
-    const modelSnapshot = this.modelMetrics.snapshot();
+    const modelSnapshot = await this.modelMetrics.usageForTenant(auth.tenantId, days);
     const operations = modelSnapshot.operations.map((operation) => ({
       operation: operation.operation,
       model: operation.model,

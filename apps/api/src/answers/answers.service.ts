@@ -86,6 +86,7 @@ export class AnswersService {
         limit: input.limit,
         tenantId: auth.tenantId,
         userId: auth.userId,
+        runId,
         principalIds: auth.principalIds,
         source: 'answer',
         signal,
@@ -120,7 +121,18 @@ export class AnswersService {
           relevantHits,
           this.config.getOrThrow('RAG_MAX_CONTEXT_CHARACTERS'),
         );
-        for await (const token of this.chatGateway.streamChat({ model, messages, signal })) {
+        for await (const token of this.chatGateway.streamChat({
+          model,
+          messages,
+          maxOutputTokens: this.config.getOrThrow('CHAT_MAX_OUTPUT_TOKENS'),
+          signal,
+          context: {
+            tenantId: auth.tenantId,
+            userId: auth.userId,
+            runId,
+            source: 'answer',
+          },
+        })) {
           answer += token;
           yield { type: 'token', content: token };
         }

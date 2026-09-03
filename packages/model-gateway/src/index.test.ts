@@ -83,16 +83,20 @@ describe('OpenAICompatibleModelGateway', () => {
         controller.close();
       },
     });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(stream));
     const gateway = new OpenAICompatibleModelGateway({
       baseUrl: 'https://models.example/v1',
       apiKey: 'secret',
-      fetcher: vi.fn<typeof fetch>().mockResolvedValue(new Response(stream)),
-      onMetric: (metric) => metrics.push(metric),
+      fetcher,
+      onMetric: (metric) => {
+        metrics.push(metric);
+      },
     });
     const tokens: string[] = [];
     for await (const token of gateway.streamChat({
       model: 'chat-model',
       messages: [{ role: 'user', content: 'hi' }],
+      maxOutputTokens: 50,
     })) {
       tokens.push(token);
     }
@@ -107,6 +111,9 @@ describe('OpenAICompatibleModelGateway', () => {
         usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
       }),
     ]);
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+      max_tokens: 50,
+    });
   });
 
   it('retries transient responses before reporting one successful call', async () => {
@@ -123,7 +130,9 @@ describe('OpenAICompatibleModelGateway', () => {
       dimensions: 2,
       fetcher,
       retryBaseDelayMs: 0,
-      onMetric: (metric) => metrics.push(metric),
+      onMetric: (metric) => {
+        metrics.push(metric);
+      },
     });
 
     await expect(gateway.embed({ model: 'embedding-model', inputs: ['retry'] })).resolves.toEqual([
@@ -131,6 +140,62 @@ describe('OpenAICompatibleModelGateway', () => {
     ]);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(metrics[0]).toMatchObject({ status: 'success', attempts: 2 });
+  });
+
+  it('reserves and settles quota for every provider attempt', async () => {
+    const metrics: ModelCallMetric[] = [];
+    const rateLimiter = {
+      consume: vi
+        .fn()
+        .mockResolvedValueOnce({
+          allowed: true,
+          reservation: { id: 'reservation-1', reservedTokens: 2 },
+        })
+        .mockResolvedValueOnce({
+          allowed: true,
+          reservation: { id: 'reservation-2', reservedTokens: 2 },
+        }),
+      settle: vi.fn().mockResolvedValue(undefined),
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('busy', { status: 429 }))
+      .mockResolvedValueOnce(
+        Response.json({ data: [{ index: 0, embedding: [1, 0] }], usage: { prompt_tokens: 3 } }),
+      );
+    const gateway = new OpenAICompatibleModelGateway({
+      baseUrl: 'https://models.example/v1',
+      apiKey: 'secret',
+      dimensions: 2,
+      fetcher,
+      rateLimiter,
+      retryBaseDelayMs: 0,
+      onMetric: (metric) => {
+        metrics.push(metric);
+      },
+    });
+
+    await gateway.embed({ model: 'embedding-model', inputs: ['retry'] });
+
+    expect(rateLimiter.consume).toHaveBeenCalledTimes(2);
+    expect(rateLimiter.settle).toHaveBeenNthCalledWith(
+      1,
+      { id: 'reservation-1', reservedTokens: 2 },
+      2,
+    );
+    expect(rateLimiter.settle).toHaveBeenNthCalledWith(
+      2,
+      { id: 'reservation-2', reservedTokens: 2 },
+      3,
+    );
+    expect(metrics[0]).toMatchObject({
+      attempts: 2,
+      usage: { inputTokens: 5, outputTokens: 0, totalTokens: 5 },
+      attemptMetrics: [
+        { attempt: 1, usageSource: 'reserved', usage: { totalTokens: 2 } },
+        { attempt: 2, usageSource: 'provider', usage: { totalTokens: 3 } },
+      ],
+    });
   });
 
   it('opens the circuit after the configured transient failure threshold', async () => {
@@ -146,7 +211,9 @@ describe('OpenAICompatibleModelGateway', () => {
       maxRetries: 0,
       circuitFailureThreshold: 1,
       circuitResetMs: 60_000,
-      onMetric: (metric) => metrics.push(metric),
+      onMetric: (metric) => {
+        metrics.push(metric);
+      },
     });
 
     await expect(gateway.embed({ model: 'embedding-model', inputs: ['first'] })).rejects.toThrow(
@@ -249,7 +316,9 @@ describe('OpenAICompatibleModelGateway', () => {
       baseUrl: 'https://models.example/v1',
       apiKey: 'secret',
       fetcher,
-      onMetric: (metric) => metrics.push(metric),
+      onMetric: (metric) => {
+        metrics.push(metric);
+      },
     });
     const controller = new AbortController();
     controller.abort();

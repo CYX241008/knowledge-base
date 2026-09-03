@@ -90,6 +90,7 @@ export class ModelContractService implements OnModuleInit {
       model: this.config.getOrThrow('EMBEDDING_MODEL'),
       inputs: ['knowledge-base dimension compatibility probe'],
       dimensions,
+      context: { source: 'health' },
     });
     if (probe?.length !== dimensions) {
       throw new Error(
@@ -105,6 +106,8 @@ export class ModelContractService implements OnModuleInit {
           { role: 'developer', content: 'Return only the word OK.' },
           { role: 'user', content: 'Production readiness probe.' },
         ],
+        maxOutputTokens: 16,
+        context: { source: 'health' },
       })) {
         output += token;
       }
@@ -119,6 +122,7 @@ export class ModelContractService implements OnModuleInit {
         { id: 'unrelated', text: 'unrelated content' },
       ],
       topN: 1,
+      context: { source: 'health' },
     });
     if (reranked.length !== 1) throw new Error('Reranker readiness probe returned no result');
   }

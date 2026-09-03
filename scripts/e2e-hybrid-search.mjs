@@ -46,7 +46,7 @@ for (let attempt = 0; completed.status !== 'ready' && attempt < 120; attempt += 
 }
 await publishVersion(created.documentId, created.documentVersionId);
 
-const result = await search();
+const result = await waitForSearchHit(created.documentId);
 const hit = result.hits.find((item) => item.documentId === created.documentId);
 if (!hit) throw new Error('Authenticated search did not return the indexed document');
 
@@ -76,6 +76,15 @@ async function search() {
       limit: 10,
     }),
   });
+}
+
+async function waitForSearchHit(documentId) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const result = await search();
+    if (result.hits.some((item) => item.documentId === documentId)) return result;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+  throw new Error('Timed out waiting for the published search projection');
 }
 
 async function publishVersion(documentId, versionId) {

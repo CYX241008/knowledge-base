@@ -10,7 +10,6 @@ import {
 } from '@knowledge-base/database';
 import { createEmbeddingGateway, type ModelGateway } from '@knowledge-base/model-gateway';
 import { ObjectStorage } from '@knowledge-base/object-storage';
-import { logEvent } from '@knowledge-base/observability';
 import {
   CHUNKER_VERSION,
   ElasticsearchChunkIndex,
@@ -21,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { DataSource, IsNull, Repository } from 'typeorm';
 import { OBJECT_STORAGE } from './worker.constants';
 import { ModelQuotaService } from './model-quota.service';
+import { ModelMetricsService } from './model-metrics.service';
 
 type BuildChunksInput = {
   document: DocumentEntity;
@@ -48,6 +48,7 @@ export class SearchProjectionService {
     @InjectRepository(DocumentChunkEntity)
     private readonly chunkRepository: Repository<DocumentChunkEntity>,
     @Inject(ModelQuotaService) private readonly modelQuota: ModelQuotaService,
+    @Inject(ModelMetricsService) private readonly modelMetrics: ModelMetricsService,
   ) {
     this.embeddingModel = this.config.getOrThrow('EMBEDDING_MODEL');
     this.embedding = createEmbeddingGateway({
@@ -59,6 +60,16 @@ export class SearchProjectionService {
       maxConcurrency: this.config.getOrThrow('MODEL_MAX_CONCURRENCY'),
       maxQueueSize: this.config.getOrThrow('MODEL_MAX_QUEUE_SIZE'),
       requestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
+      tokenRateLimits: {
+        global: this.config.getOrThrow('MODEL_GLOBAL_TOKENS_PER_MINUTE'),
+        tenant: this.config.getOrThrow('MODEL_TENANT_TOKENS_PER_MINUTE'),
+        user: this.config.getOrThrow('MODEL_USER_TOKENS_PER_MINUTE'),
+        model: {
+          embedding: this.config.getOrThrow('MODEL_EMBEDDING_TOKENS_PER_MINUTE'),
+          chat: this.config.getOrThrow('MODEL_CHAT_TOKENS_PER_MINUTE'),
+          rerank: this.config.getOrThrow('MODEL_RERANK_TOKENS_PER_MINUTE'),
+        },
+      },
       rateLimiter: this.modelQuota.rateLimiter,
       circuitBreaker: this.modelQuota.circuitBreaker,
       maxRetries: this.config.getOrThrow('MODEL_MAX_RETRIES'),
@@ -73,7 +84,7 @@ export class SearchProjectionService {
         'MODEL_CIRCUIT_HALF_OPEN_PROBE_TIMEOUT_MS',
       ),
       includeUsage: this.config.getOrThrow('MODEL_STREAM_INCLUDE_USAGE'),
-      onMetric: (metric) => logEvent('model.call', metric),
+      onMetric: this.modelMetrics.observe,
     });
     this.keywordIndex = new ElasticsearchChunkIndex(
       this.config.getOrThrow('ELASTICSEARCH_URL'),
@@ -91,6 +102,11 @@ export class SearchProjectionService {
           model: this.embeddingModel,
           inputs: chunks.slice(offset, offset + 64).map((chunk) => chunk.content),
           dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
+          context: {
+            tenantId: input.document.tenantId,
+            runId: input.version.id,
+            source: 'ingestion',
+          },
         })),
       );
     }

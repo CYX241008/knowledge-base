@@ -536,6 +536,23 @@ ready | retrying | failed | cancelled`
   - `audit_retention_days`: 30-3650
   - `version > 0`
 
+#### `model_usage_event`
+
+- 用途：持久记录 API 和 Worker 的每次模型调用尝试，用于租户时间窗口统计、重试计费和预算审计。
+- 主键：`id`
+- 唯一：`(call_id, attempt)`
+- 字段：`call_id`、`tenant_id uuid?`、`user_id uuid?`、`run_id uuid?`、
+  `source varchar(32)?`、`operation varchar(16)`、`model varchar(128)`、
+  `attempt integer`、`call_status varchar(16)`、`attempt_status varchar(16)`、
+  `usage_source varchar(16)`、`reserved_tokens integer`、`input_tokens integer`、
+  `output_tokens integer`、`total_tokens integer`、`estimated_cost_usd numeric(20,10)`、
+  `attempt_duration_ms integer`、`call_duration_ms integer`、
+  `first_token_duration_ms integer?`、`error_code varchar(128)?`、`created_at`
+- `usage_source`：
+  - `provider`：供应商返回的实际 usage。
+  - `estimated`：成功调用未返回 usage 时的估算。
+  - `reserved`：失败或超时调用保留的预留 Token。
+
 #### `audit_event`
 
 - 用途：租户内业务审计事件。

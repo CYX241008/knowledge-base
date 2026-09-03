@@ -17,6 +17,16 @@ export function modelRuntimeOptions(
     maxConcurrency: config.getOrThrow('MODEL_MAX_CONCURRENCY'),
     maxQueueSize: config.getOrThrow('MODEL_MAX_QUEUE_SIZE'),
     requestsPerMinute: config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
+    tokenRateLimits: {
+      global: config.getOrThrow('MODEL_GLOBAL_TOKENS_PER_MINUTE'),
+      tenant: config.getOrThrow('MODEL_TENANT_TOKENS_PER_MINUTE'),
+      user: config.getOrThrow('MODEL_USER_TOKENS_PER_MINUTE'),
+      model: {
+        embedding: config.getOrThrow('MODEL_EMBEDDING_TOKENS_PER_MINUTE'),
+        chat: config.getOrThrow('MODEL_CHAT_TOKENS_PER_MINUTE'),
+        rerank: config.getOrThrow('MODEL_RERANK_TOKENS_PER_MINUTE'),
+      },
+    },
     rateLimiter,
     circuitBreaker,
     maxRetries: config.getOrThrow('MODEL_MAX_RETRIES'),

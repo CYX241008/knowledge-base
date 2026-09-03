@@ -72,7 +72,7 @@ export type ModelTokenUsage = {
 export type ModelUsageSource = 'provider' | 'estimated' | 'reserved';
 export type ModelAttemptMetric = {
   attempt: number;
-  status: 'success' | 'error' | 'cancelled';
+  status: 'success' | 'error' | 'cancelled' | 'rejected';
   durationMs: number;
   reservedTokens: number;
   usage: ModelTokenUsage;
@@ -143,8 +143,10 @@ export class LocalHashEmbeddingGateway implements Pick<ModelGateway, 'embed'> {
   constructor(private readonly onMetric?: ModelCallObserver) {}
 
   async embed(request: EmbeddingRequest): Promise<number[][]> {
+    const callId = randomUUID();
     const startedAt = Date.now();
     const inputCharacters = request.inputs.reduce((sum, input) => sum + input.length, 0);
+    const usage = estimatedUsage(estimateTextsTokens(request.inputs), 0);
     try {
       if (request.signal?.aborted) throw abortError(request.signal.reason);
       if (request.model !== LOCAL_HASH_EMBEDDING_MODEL)
@@ -156,7 +158,8 @@ export class LocalHashEmbeddingGateway implements Pick<ModelGateway, 'embed'> {
         throw new Error(`Local embeddings require ${LOCAL_HASH_EMBEDDING_DIMENSIONS} dimensions`);
       }
       const vectors = request.inputs.map((input) => embedText(input));
-      emitMetric(this.onMetric, {
+      await emitMetric(this.onMetric, {
+        callId,
         operation: 'embedding',
         model: request.model,
         status: 'success',
@@ -164,10 +167,23 @@ export class LocalHashEmbeddingGateway implements Pick<ModelGateway, 'embed'> {
         attempts: 1,
         inputCharacters,
         outputCharacters: 0,
+        usage,
+        context: request.context,
+        attemptMetrics: [
+          {
+            attempt: 1,
+            status: 'success',
+            durationMs: Date.now() - startedAt,
+            reservedTokens: usage.totalTokens,
+            usage,
+            usageSource: 'estimated',
+          },
+        ],
       });
       return vectors;
     } catch (error) {
-      emitMetric(this.onMetric, {
+      await emitMetric(this.onMetric, {
+        callId,
         operation: 'embedding',
         model: request.model,
         status: isAbortError(error) ? 'cancelled' : 'error',
@@ -175,6 +191,19 @@ export class LocalHashEmbeddingGateway implements Pick<ModelGateway, 'embed'> {
         attempts: 1,
         inputCharacters,
         outputCharacters: 0,
+        usage,
+        context: request.context,
+        attemptMetrics: [
+          {
+            attempt: 1,
+            status: isAbortError(error) ? 'cancelled' : 'error',
+            durationMs: Date.now() - startedAt,
+            reservedTokens: usage.totalTokens,
+            usage,
+            usageSource: 'estimated',
+            errorCode: modelErrorCode(error),
+          },
+        ],
       });
       throw error;
     }
@@ -209,11 +238,15 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
 
   async embed(request: EmbeddingRequest): Promise<number[][]> {
     const inputCharacters = request.inputs.reduce((sum, input) => sum + input.length, 0);
+    const estimatedInputTokens = estimateTextsTokens(request.inputs);
     const scope = await this.resilience.open({
       operation: 'embedding',
       model: request.model,
       signal: request.signal,
       inputCharacters,
+      estimatedInputTokens,
+      maxOutputTokens: 0,
+      requestContext: request.context,
     });
     try {
       const response = await scope.retry(() =>
@@ -260,9 +293,13 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
       model: request.model,
       signal: request.signal,
       inputCharacters,
+      estimatedInputTokens: estimateChatTokens(request.messages),
+      maxOutputTokens: Math.max(0, Math.floor(request.maxOutputTokens ?? 0)),
+      requestContext: request.context,
     });
     let usage: ModelTokenUsage | undefined;
     let outputCharacters = 0;
+    let estimatedOutputTokens = 0;
     try {
       const response = await scope.retry(() =>
         this.request(
@@ -273,6 +310,9 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
               model: request.model,
               messages: request.messages,
               stream: true,
+              ...(request.maxOutputTokens === undefined
+                ? {}
+                : { max_tokens: request.maxOutputTokens }),
               ...(this.options.includeUsage === false
                 ? {}
                 : { stream_options: { include_usage: true } }),
@@ -298,6 +338,7 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
           if (parsed.token) {
             scope.markFirstToken();
             outputCharacters += parsed.token.length;
+            estimatedOutputTokens += estimateTextTokens(parsed.token);
             yield parsed.token;
           }
           if (parsed.done) {
@@ -313,15 +354,17 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
         if (parsed.token) {
           scope.markFirstToken();
           outputCharacters += parsed.token.length;
+          estimatedOutputTokens += estimateTextTokens(parsed.token);
           yield parsed.token;
         }
       }
-      await scope.succeed(usage, outputCharacters);
+      await scope.succeed(usage, outputCharacters, estimatedOutputTokens);
     } catch (error) {
-      await scope.fail(error, outputCharacters);
+      await scope.fail(error, outputCharacters, usage, estimatedOutputTokens);
       throw error;
     } finally {
-      if (!scope.isClosed()) await scope.fail(abortError(), outputCharacters);
+      if (!scope.isClosed())
+        await scope.fail(abortError(), outputCharacters, usage, estimatedOutputTokens);
     }
   }
 
@@ -354,9 +397,15 @@ export class LocalLexicalRerankGateway implements RerankGateway {
   constructor(private readonly onMetric?: ModelCallObserver) {}
 
   async rerank(request: RerankRequest): Promise<RerankResult[]> {
+    const callId = randomUUID();
     const startedAt = Date.now();
     const inputCharacters =
       request.query.length + request.documents.reduce((sum, item) => sum + item.text.length, 0);
+    const usage = estimatedUsage(
+      estimateTextTokens(request.query) +
+        estimateTextsTokens(request.documents.map((document) => document.text)),
+      0,
+    );
     try {
       if (request.signal?.aborted) throw abortError(request.signal.reason);
       if (request.model !== LOCAL_LEXICAL_RERANKER_MODEL)
@@ -373,7 +422,8 @@ export class LocalLexicalRerankGateway implements RerankGateway {
         })
         .sort((left, right) => right.score - left.score)
         .slice(0, request.topN);
-      emitMetric(this.onMetric, {
+      await emitMetric(this.onMetric, {
+        callId,
         operation: 'rerank',
         model: request.model,
         status: 'success',
@@ -381,10 +431,23 @@ export class LocalLexicalRerankGateway implements RerankGateway {
         attempts: 1,
         inputCharacters,
         outputCharacters: 0,
+        usage,
+        context: request.context,
+        attemptMetrics: [
+          {
+            attempt: 1,
+            status: 'success',
+            durationMs: Date.now() - startedAt,
+            reservedTokens: usage.totalTokens,
+            usage,
+            usageSource: 'estimated',
+          },
+        ],
       });
       return results;
     } catch (error) {
-      emitMetric(this.onMetric, {
+      await emitMetric(this.onMetric, {
+        callId,
         operation: 'rerank',
         model: request.model,
         status: isAbortError(error) ? 'cancelled' : 'error',
@@ -392,6 +455,19 @@ export class LocalLexicalRerankGateway implements RerankGateway {
         attempts: 1,
         inputCharacters,
         outputCharacters: 0,
+        usage,
+        context: request.context,
+        attemptMetrics: [
+          {
+            attempt: 1,
+            status: isAbortError(error) ? 'cancelled' : 'error',
+            durationMs: Date.now() - startedAt,
+            reservedTokens: usage.totalTokens,
+            usage,
+            usageSource: 'estimated',
+            errorCode: modelErrorCode(error),
+          },
+        ],
       });
       throw error;
     }
@@ -419,6 +495,11 @@ export class HttpRerankGateway implements RerankGateway {
       signal: request.signal,
       inputCharacters:
         request.query.length + request.documents.reduce((sum, item) => sum + item.text.length, 0),
+      estimatedInputTokens:
+        estimateTextTokens(request.query) +
+        estimateTextsTokens(request.documents.map((document) => document.text)),
+      maxOutputTokens: 0,
+      requestContext: request.context,
     });
     try {
       const response = await scope.retry(async () => {
@@ -488,6 +569,7 @@ export function createEmbeddingGateway(
     maxConcurrency: options.maxConcurrency,
     maxQueueSize: options.maxQueueSize,
     requestsPerMinute: options.requestsPerMinute,
+    tokenRateLimits: options.tokenRateLimits,
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
@@ -519,6 +601,7 @@ export function createRerankGateway(
     maxConcurrency: options.maxConcurrency,
     maxQueueSize: options.maxQueueSize,
     requestsPerMinute: options.requestsPerMinute,
+    tokenRateLimits: options.tokenRateLimits,
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
@@ -546,6 +629,7 @@ export function createChatGateway(
     maxConcurrency: options.maxConcurrency,
     maxQueueSize: options.maxQueueSize,
     requestsPerMinute: options.requestsPerMinute,
+    tokenRateLimits: options.tokenRateLimits,
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
@@ -606,7 +690,7 @@ export class ModelGatewayOverloadedError extends Error {
 
 export class ModelGatewayRateLimitError extends Error {
   constructor(readonly retryAfterMs?: number) {
-    super('Model gateway request rate limit exceeded');
+    super('Model gateway request or token rate limit exceeded');
     this.name = 'ModelGatewayRateLimitError';
   }
 }
@@ -626,6 +710,9 @@ type CallContext = {
   model: string;
   signal?: AbortSignal;
   inputCharacters: number;
+  estimatedInputTokens: number;
+  maxOutputTokens: number;
+  requestContext?: ModelCallContext;
 };
 
 class ResilienceController {
@@ -645,7 +732,7 @@ class ResilienceController {
       Math.max(1, Math.floor(options.maxConcurrency ?? 8)),
       Math.max(0, Math.floor(options.maxQueueSize ?? 100)),
     );
-    this.rateLimiter = options.rateLimiter ?? new FixedWindowRateLimiter();
+    this.rateLimiter = options.rateLimiter ?? new LocalModelRateLimiter();
     this.circuitBreaker = options.circuitBreaker ?? new LocalModelCircuitBreaker();
     this.maxRetries = Math.max(0, Math.floor(options.maxRetries ?? 2));
     this.retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? 250);
@@ -666,9 +753,10 @@ class ResilienceController {
   }
 
   async open(context: CallContext): Promise<ModelCallScope> {
+    const callId = randomUUID();
     const startedAt = Date.now();
     if (context.signal?.aborted) {
-      this.emit(context, 'cancelled', startedAt, 0, 0);
+      await this.emit(callId, context, 'cancelled', startedAt, 0, 0, undefined, undefined, []);
       throw abortError(context.signal.reason);
     }
     const circuitInput = this.circuitInput(context);
@@ -676,23 +764,18 @@ class ResilienceController {
     try {
       circuitDecision = await this.circuitBreaker.acquire(circuitInput);
     } catch (error) {
-      this.emit(context, 'rejected', startedAt, 0, 0);
+      await this.emit(callId, context, 'rejected', startedAt, 0, 0, undefined, undefined, []);
       throw error;
     }
     if (!circuitDecision.allowed) {
-      this.emit(context, 'rejected', startedAt, 0, 0);
+      await this.emit(callId, context, 'rejected', startedAt, 0, 0, undefined, undefined, []);
       throw new ModelGatewayUnavailableError(circuitDecision.state, circuitDecision.retryAfterMs);
     }
     try {
-      const decision = await this.rateLimiter.consume({
-        operation: context.operation,
-        model: context.model,
-        limit: Math.max(0, Math.floor(this.options.requestsPerMinute ?? 600)),
-      });
-      if (!decision.allowed) throw new ModelGatewayRateLimitError(decision.retryAfterMs);
       const release = await this.gate.acquire(context.signal);
       return new ModelCallScope(
         this,
+        callId,
         context,
         release,
         startedAt,
@@ -701,12 +784,48 @@ class ResilienceController {
       );
     } catch (error) {
       await this.releaseCircuit(circuitInput, circuitDecision.permit);
-      this.emit(context, isAbortError(error) ? 'cancelled' : 'rejected', startedAt, 0, 0);
+      await this.emit(
+        callId,
+        context,
+        isAbortError(error) ? 'cancelled' : 'rejected',
+        startedAt,
+        0,
+        0,
+        undefined,
+        undefined,
+        [],
+      );
       throw error;
     }
   }
 
+  async reserveAttempt(context: CallContext): Promise<ModelQuotaReservation | undefined> {
+    const decision = await this.rateLimiter.consume({
+      operation: context.operation,
+      model: context.model,
+      limit: Math.max(0, Math.floor(this.options.requestsPerMinute ?? 600)),
+      estimatedTokens: context.estimatedInputTokens + context.maxOutputTokens,
+      tokenLimits: this.options.tokenRateLimits,
+      context: context.requestContext,
+    });
+    if (!decision.allowed) throw new ModelGatewayRateLimitError(decision.retryAfterMs);
+    return decision.reservation;
+  }
+
+  async settleAttempt(
+    reservation: ModelQuotaReservation | undefined,
+    actualTokens: number,
+  ): Promise<void> {
+    if (!reservation) return;
+    try {
+      await this.rateLimiter.settle(reservation, Math.max(0, Math.floor(actualTokens)));
+    } catch {
+      // Quota settlement must not change an already completed provider attempt.
+    }
+  }
+
   async callSucceeded(
+    callId: string,
     context: CallContext,
     release: () => void,
     startedAt: number,
@@ -716,10 +835,12 @@ class ResilienceController {
     usage?: ModelTokenUsage,
     outputCharacters = 0,
     firstTokenDurationMs?: number,
+    attemptMetrics: ModelAttemptMetric[] = [],
   ): Promise<void> {
     release();
     await this.reportCircuit(() => this.circuitBreaker.succeed(circuitInput, circuitPermit));
-    this.emit(
+    await this.emit(
+      callId,
       context,
       'success',
       startedAt,
@@ -727,10 +848,12 @@ class ResilienceController {
       outputCharacters,
       usage,
       firstTokenDurationMs,
+      attemptMetrics,
     );
   }
 
   async callFailed(
+    callId: string,
     context: CallContext,
     release: () => void,
     startedAt: number,
@@ -740,6 +863,7 @@ class ResilienceController {
     error: unknown,
     outputCharacters = 0,
     firstTokenDurationMs?: number,
+    attemptMetrics: ModelAttemptMetric[] = [],
   ): Promise<void> {
     release();
     if (isRetryableError(error) && !context.signal?.aborted) {
@@ -747,14 +871,16 @@ class ResilienceController {
     } else {
       await this.releaseCircuit(circuitInput, circuitPermit);
     }
-    this.emit(
+    await this.emit(
+      callId,
       context,
-      context.signal?.aborted || isAbortError(error) ? 'cancelled' : 'error',
+      modelCallStatus(error, context.signal),
       startedAt,
       attempts,
       outputCharacters,
-      undefined,
+      sumAttemptUsage(attemptMetrics),
       firstTokenDurationMs,
+      attemptMetrics,
     );
   }
 
@@ -795,7 +921,8 @@ class ResilienceController {
     }
   }
 
-  private emit(
+  private async emit(
+    callId: string,
     context: CallContext,
     status: ModelCallMetric['status'],
     startedAt: number,
@@ -803,8 +930,10 @@ class ResilienceController {
     outputCharacters: number,
     usage?: ModelTokenUsage,
     firstTokenDurationMs?: number,
-  ): void {
-    emitMetric(this.options.onMetric, {
+    attemptMetrics: ModelAttemptMetric[] = [],
+  ): Promise<void> {
+    await emitMetric(this.options.onMetric, {
+      callId,
       operation: context.operation,
       model: context.model,
       status,
@@ -814,6 +943,8 @@ class ResilienceController {
       inputCharacters: context.inputCharacters,
       outputCharacters,
       usage,
+      context: context.requestContext,
+      attemptMetrics,
     });
   }
 }
@@ -822,9 +953,18 @@ class ModelCallScope {
   private attempts = 0;
   private closed = false;
   private firstTokenDurationMs: number | undefined;
+  private readonly attemptMetrics: ModelAttemptMetric[] = [];
+  private pendingAttempt:
+    | {
+        attempt: number;
+        startedAt: number;
+        reservation?: ModelQuotaReservation;
+      }
+    | undefined;
 
   constructor(
     private readonly controller: ResilienceController,
+    private readonly callId: string,
     private readonly context: CallContext,
     private readonly release: () => void,
     private readonly startedAt: number,
@@ -836,10 +976,29 @@ class ModelCallScope {
     const { maxRetries, retryBaseDelayMs } = this.controller.retrySettings(this.circuitPermit);
     while (true) {
       if (this.context.signal?.aborted) throw abortError(this.context.signal.reason);
+      const reservation = await this.controller.reserveAttempt(this.context);
       this.attempts += 1;
+      const attempt = this.attempts;
+      const attemptStartedAt = Date.now();
       try {
-        return await operation();
+        const result = await operation();
+        this.pendingAttempt = { attempt, startedAt: attemptStartedAt, reservation };
+        return result;
       } catch (error) {
+        const usage = estimatedUsage(
+          this.context.estimatedInputTokens,
+          this.context.maxOutputTokens,
+        );
+        await this.controller.settleAttempt(reservation, usage.totalTokens);
+        this.attemptMetrics.push({
+          attempt,
+          status: isAbortError(error) ? 'cancelled' : 'error',
+          durationMs: Date.now() - attemptStartedAt,
+          reservedTokens: reservation?.reservedTokens ?? usage.totalTokens,
+          usage,
+          usageSource: 'reserved',
+          errorCode: modelErrorCode(error),
+        });
         if (
           this.context.signal?.aborted ||
           !isRetryableError(error) ||
@@ -852,26 +1011,45 @@ class ModelCallScope {
     }
   }
 
-  async succeed(usage?: ModelTokenUsage, outputCharacters = 0): Promise<void> {
+  async succeed(
+    usage?: ModelTokenUsage,
+    outputCharacters = 0,
+    estimatedOutputTokens = 0,
+  ): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.completePendingAttempt('success', usage, estimatedOutputTokens);
     await this.controller.callSucceeded(
+      this.callId,
       this.context,
       this.release,
       this.startedAt,
       this.attempts,
       this.circuitInput,
       this.circuitPermit,
-      usage,
+      sumAttemptUsage(this.attemptMetrics),
       outputCharacters,
       this.firstTokenDurationMs,
+      this.attemptMetrics,
     );
   }
 
-  async fail(error: unknown, outputCharacters = 0): Promise<void> {
+  async fail(
+    error: unknown,
+    outputCharacters = 0,
+    usage?: ModelTokenUsage,
+    estimatedOutputTokens = 0,
+  ): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.completePendingAttempt(
+      isAbortError(error) || this.context.signal?.aborted ? 'cancelled' : 'error',
+      usage,
+      estimatedOutputTokens,
+      error,
+    );
     await this.controller.callFailed(
+      this.callId,
       this.context,
       this.release,
       this.startedAt,
@@ -881,6 +1059,7 @@ class ModelCallScope {
       error,
       outputCharacters,
       this.firstTokenDurationMs,
+      this.attemptMetrics,
     );
   }
 
@@ -891,23 +1070,79 @@ class ModelCallScope {
   markFirstToken(): void {
     this.firstTokenDurationMs ??= Date.now() - this.startedAt;
   }
+
+  private async completePendingAttempt(
+    status: ModelAttemptMetric['status'],
+    providerUsage: ModelTokenUsage | undefined,
+    estimatedOutputTokens: number,
+    error?: unknown,
+  ): Promise<void> {
+    const pending = this.pendingAttempt;
+    if (!pending) return;
+    this.pendingAttempt = undefined;
+    const usage =
+      providerUsage ??
+      estimatedUsage(this.context.estimatedInputTokens, Math.max(0, estimatedOutputTokens));
+    await this.controller.settleAttempt(pending.reservation, usage.totalTokens);
+    this.attemptMetrics.push({
+      attempt: pending.attempt,
+      status,
+      durationMs: Date.now() - pending.startedAt,
+      reservedTokens:
+        pending.reservation?.reservedTokens ??
+        this.context.estimatedInputTokens + this.context.maxOutputTokens,
+      usage,
+      usageSource: providerUsage ? 'provider' : 'estimated',
+      ...(error === undefined ? {} : { errorCode: modelErrorCode(error) }),
+    });
+  }
 }
 
-class FixedWindowRateLimiter {
-  private windowStartedAt = Date.now();
-  private requests = 0;
+export class LocalModelRateLimiter implements ModelRateLimiter {
+  private readonly counters = new Map<string, { windowStartedAt: number; value: number }>();
+  private readonly reservations = new Map<string, { keys: string[]; reservedTokens: number }>();
 
   async consume(input: ModelRateLimitInput, now = Date.now()): Promise<ModelRateLimitDecision> {
-    if (input.limit === 0) return { allowed: true };
-    if (now - this.windowStartedAt >= 60_000) {
-      this.windowStartedAt = now;
-      this.requests = 0;
+    const estimatedTokens = Math.max(0, Math.floor(input.estimatedTokens ?? 0));
+    const entries = quotaEntries(input).filter((entry) => entry.limit > 0 && entry.amount > 0);
+    for (const entry of entries) {
+      const counter = this.currentCounter(entry.key, now);
+      if (counter.value + entry.amount > entry.limit) {
+        return {
+          allowed: false,
+          retryAfterMs: Math.max(1, 60_000 - (now - counter.windowStartedAt)),
+        };
+      }
     }
-    if (this.requests >= input.limit) {
-      return { allowed: false, retryAfterMs: Math.max(1, 60_000 - (now - this.windowStartedAt)) };
+    for (const entry of entries) {
+      const counter = this.currentCounter(entry.key, now);
+      counter.value += entry.amount;
     }
-    this.requests += 1;
-    return { allowed: true };
+    const tokenKeys = entries.filter((entry) => entry.kind === 'token').map((entry) => entry.key);
+    if (tokenKeys.length === 0 || estimatedTokens === 0) return { allowed: true };
+    const reservation = { id: randomUUID(), reservedTokens: estimatedTokens };
+    this.reservations.set(reservation.id, { keys: tokenKeys, reservedTokens: estimatedTokens });
+    return { allowed: true, reservation };
+  }
+
+  async settle(reservation: ModelQuotaReservation, actualTokens: number): Promise<void> {
+    const stored = this.reservations.get(reservation.id);
+    if (!stored) return;
+    this.reservations.delete(reservation.id);
+    const delta = Math.max(0, Math.floor(actualTokens)) - stored.reservedTokens;
+    if (delta === 0) return;
+    for (const key of stored.keys) {
+      const counter = this.counters.get(key);
+      if (counter) counter.value = Math.max(0, counter.value + delta);
+    }
+  }
+
+  private currentCounter(key: string, now: number): { windowStartedAt: number; value: number } {
+    const current = this.counters.get(key);
+    if (current && now - current.windowStartedAt < 60_000) return current;
+    const next = { windowStartedAt: now, value: 0 };
+    this.counters.set(key, next);
+    return next;
   }
 }
 
@@ -990,6 +1225,21 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+function modelCallStatus(
+  error: unknown,
+  signal?: AbortSignal,
+): Extract<ModelCallMetric['status'], 'error' | 'cancelled' | 'rejected'> {
+  if (signal?.aborted || isAbortError(error)) return 'cancelled';
+  if (
+    error instanceof ModelGatewayRateLimitError ||
+    error instanceof ModelGatewayOverloadedError ||
+    error instanceof ModelGatewayUnavailableError
+  ) {
+    return 'rejected';
+  }
+  return 'error';
+}
+
 function abortError(reason?: unknown): Error {
   if (reason instanceof Error) return reason;
   return new DOMException('The operation was aborted', 'AbortError');
@@ -1040,9 +1290,98 @@ function normalizeUsage(
   };
 }
 
-function emitMetric(observer: ModelCallObserver | undefined, metric: ModelCallMetric): void {
+function estimatedUsage(inputTokens: number, outputTokens: number): ModelTokenUsage {
+  const normalizedInput = Math.max(0, Math.floor(inputTokens));
+  const normalizedOutput = Math.max(0, Math.floor(outputTokens));
+  return {
+    inputTokens: normalizedInput,
+    outputTokens: normalizedOutput,
+    totalTokens: normalizedInput + normalizedOutput,
+  };
+}
+
+function sumAttemptUsage(attempts: readonly ModelAttemptMetric[]): ModelTokenUsage | undefined {
+  if (attempts.length === 0) return undefined;
+  return attempts.reduce<ModelTokenUsage>(
+    (sum, attempt) => ({
+      inputTokens: sum.inputTokens + attempt.usage.inputTokens,
+      outputTokens: sum.outputTokens + attempt.usage.outputTokens,
+      totalTokens: sum.totalTokens + attempt.usage.totalTokens,
+    }),
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  );
+}
+
+export function estimateTextTokens(input: string): number {
+  if (!input) return 0;
+  return Math.max(1, Math.ceil(new TextEncoder().encode(input).byteLength / 3));
+}
+
+function estimateTextsTokens(inputs: readonly string[]): number {
+  return inputs.reduce((sum, input) => sum + estimateTextTokens(input), 0);
+}
+
+function estimateChatTokens(messages: readonly ChatMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateTextTokens(message.content) + 4, 0) + 2;
+}
+
+function quotaEntries(input: ModelRateLimitInput): Array<{
+  key: string;
+  kind: 'request' | 'token';
+  amount: number;
+  limit: number;
+}> {
+  const estimatedTokens = Math.max(0, Math.floor(input.estimatedTokens ?? 0));
+  const limits = input.tokenLimits;
+  return [
+    {
+      key: `rpm:${input.operation}:${input.model}`,
+      kind: 'request',
+      amount: 1,
+      limit: Math.max(0, Math.floor(input.limit)),
+    },
+    {
+      key: 'tpm:global',
+      kind: 'token',
+      amount: estimatedTokens,
+      limit: Math.max(0, Math.floor(limits?.global ?? 0)),
+    },
+    {
+      key: `tpm:tenant:${input.context?.tenantId ?? 'unknown'}`,
+      kind: 'token',
+      amount: estimatedTokens,
+      limit: input.context?.tenantId ? Math.max(0, Math.floor(limits?.tenant ?? 0)) : 0,
+    },
+    {
+      key: `tpm:user:${input.context?.tenantId ?? 'unknown'}:${input.context?.userId ?? 'unknown'}`,
+      kind: 'token',
+      amount: estimatedTokens,
+      limit:
+        input.context?.tenantId && input.context.userId
+          ? Math.max(0, Math.floor(limits?.user ?? 0))
+          : 0,
+    },
+    {
+      key: `tpm:model:${input.operation}:${input.model}`,
+      kind: 'token',
+      amount: estimatedTokens,
+      limit: Math.max(0, Math.floor(limits?.model[input.operation] ?? 0)),
+    },
+  ];
+}
+
+function modelErrorCode(error: unknown): string {
+  if (error instanceof ModelHttpError) return `http_${error.status}`;
+  if (error instanceof Error) return error.name.slice(0, 128);
+  return 'unknown_error';
+}
+
+async function emitMetric(
+  observer: ModelCallObserver | undefined,
+  metric: ModelCallMetric,
+): Promise<void> {
   try {
-    observer?.(metric);
+    await observer?.(metric);
   } catch {
     // Metrics must not change model-call behavior.
   }

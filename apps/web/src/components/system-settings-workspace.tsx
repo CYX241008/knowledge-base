@@ -483,7 +483,14 @@ function RuntimeTable({ runtime }: { runtime: SystemRuntimeConfiguration }): Rea
     ['近重复相似度阈值', runtime.nearDuplicateThreshold.toString()],
     ['问答相关性阈值', runtime.ragMinRelevance.toString()],
     ['模型超时', `${runtime.modelRequestTimeoutMs.toLocaleString('zh-CN')} ms`],
-    ['请求限额', `${runtime.modelRequestsPerMinute.toLocaleString('zh-CN')} 次/分钟`],
+    ['请求限额', formatQuota(runtime.modelRequestsPerMinute, '次/分钟')],
+    ['全局 Token 限额', formatQuota(runtime.modelGlobalTokensPerMinute, 'TPM')],
+    ['租户 Token 限额', formatQuota(runtime.modelTenantTokensPerMinute, 'TPM')],
+    ['用户 Token 限额', formatQuota(runtime.modelUserTokensPerMinute, 'TPM')],
+    ['Embedding 限额', formatQuota(runtime.embeddingTokensPerMinute, 'TPM')],
+    ['Chat 限额', formatQuota(runtime.chatTokensPerMinute, 'TPM')],
+    ['Rerank 限额', formatQuota(runtime.rerankTokensPerMinute, 'TPM')],
+    ['回答输出上限', `${runtime.chatMaxOutputTokens.toLocaleString('zh-CN')} tokens`],
     ['上传上限', formatBytes(runtime.maxUploadSizeBytes)],
     ['会话保留', `${runtime.chatRetentionDays} 天`],
     ['检索索引', runtime.elasticsearchIndex],
@@ -498,6 +505,10 @@ function RuntimeTable({ runtime }: { runtime: SystemRuntimeConfiguration }): Rea
       ))}
     </dl>
   );
+}
+
+function formatQuota(value: number, unit: string): string {
+  return value === 0 ? '未启用' : `${value.toLocaleString('zh-CN')} ${unit}`;
 }
 
 function AuditView({
@@ -653,7 +664,7 @@ function QualityView({
       <div className="quality-toolbar">
         <div>
           <strong>质量与成本概览</strong>
-          <span>检索与反馈按租户统计；模型指标来自当前 API 实例。</span>
+          <span>检索、反馈和模型用量均按当前租户与所选时间范围统计。</span>
         </div>
         <label>
           <CalendarDays size={15} />
@@ -686,7 +697,7 @@ function QualityView({
         />
         <QualityMetric
           detail={`${data.models.totalTokens.toLocaleString('zh-CN')} tokens`}
-          label="实例估算成本"
+          label="租户估算成本"
           value={formatUsd(data.models.estimatedCostUsd)}
         />
       </div>
@@ -716,7 +727,7 @@ function QualityView({
           <div className="settings-section-heading compact">
             <div>
               <h2>模型调用</h2>
-              <p>实例启动于 {formatDate(data.models.startedAt)}</p>
+              <p>统计起点 {formatDate(data.models.startedAt)}</p>
             </div>
             <Activity size={18} />
           </div>

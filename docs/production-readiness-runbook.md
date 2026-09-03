@@ -4,7 +4,7 @@
 
 本阶段将 PostgreSQL 和 MinIO 视为事实源，将 Elasticsearch 视为可重建投影，将 Redis 视为队列、限流和短期状态。仓库不会保存真实 JWT、模型密钥、数据库密码或备份文件。
 
-生产多副本必须设置 `MODEL_RATE_LIMIT_BACKEND=redis`。Redis Lua 脚本按 `namespace + operation + model` 原子累计每分钟请求数，并协调 `closed/open/half-open` 熔断状态，API 和 Worker 副本共享同一配额与探针名额。`MODEL_RATE_LIMIT_FAIL_OPEN=false` 是默认生产策略；只有在业务明确接受 Redis 故障期间退回进程内配额与熔断状态时才允许打开。
+生产多副本必须设置 `MODEL_RATE_LIMIT_BACKEND=redis`。Redis Lua 脚本原子检查并预留 RPM、全局 TPM、租户 TPM、用户 TPM 和 operation-model TPM；调用成功后按实际 usage 结算差额，失败且无 usage 时保留预留量直到窗口过期。Redis 同时协调 `closed/open/half-open` 熔断状态，API 和 Worker 副本共享配额与探针名额。`MODEL_RATE_LIMIT_FAIL_OPEN=false` 是默认生产策略；只有在业务明确接受 Redis 故障期间退回进程内配额与熔断状态时才允许打开。
 
 ## 2. 预发布配置
 
@@ -32,6 +32,13 @@ CHAT_MODEL=<chat-model>
 MODEL_VALIDATE_ON_STARTUP=true
 MODEL_RATE_LIMIT_BACKEND=redis
 MODEL_REQUESTS_PER_MINUTE=600
+MODEL_GLOBAL_TOKENS_PER_MINUTE=1000000
+MODEL_TENANT_TOKENS_PER_MINUTE=200000
+MODEL_USER_TOKENS_PER_MINUTE=50000
+MODEL_EMBEDDING_TOKENS_PER_MINUTE=500000
+MODEL_CHAT_TOKENS_PER_MINUTE=300000
+MODEL_RERANK_TOKENS_PER_MINUTE=300000
+CHAT_MAX_OUTPUT_TOKENS=1500
 MODEL_RATE_LIMIT_NAMESPACE=knowledge-base-staging
 MODEL_RATE_LIMIT_FAIL_OPEN=false
 MODEL_CIRCUIT_FAILURE_THRESHOLD=5

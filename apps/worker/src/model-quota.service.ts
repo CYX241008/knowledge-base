@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { buildRedisUrl, type ServerEnv } from '@knowledge-base/config';
 import {
   LocalModelCircuitBreaker,
+  LocalModelRateLimiter,
   RedisModelCircuitBreaker,
   RedisModelRateLimiter,
   type ModelCircuitBreaker,
@@ -12,13 +13,14 @@ import { logEvent } from '@knowledge-base/observability';
 
 @Injectable()
 export class ModelQuotaService implements OnModuleDestroy {
-  readonly rateLimiter: ModelRateLimiter | undefined;
+  readonly rateLimiter: ModelRateLimiter;
   readonly circuitBreaker: ModelCircuitBreaker;
   private readonly redisRateLimiter: RedisModelRateLimiter | undefined;
   private readonly redisCircuitBreaker: RedisModelCircuitBreaker | undefined;
 
   constructor(@Inject(ConfigService) config: ConfigService<ServerEnv, true>) {
     if (config.getOrThrow('MODEL_RATE_LIMIT_BACKEND') !== 'redis') {
+      this.rateLimiter = new LocalModelRateLimiter();
       this.circuitBreaker = new LocalModelCircuitBreaker();
       return;
     }

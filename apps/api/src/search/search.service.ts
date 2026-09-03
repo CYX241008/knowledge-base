@@ -41,6 +41,7 @@ type RankedChunk = { id: string; score: number };
 type SearchCommand = SearchDocumentsRequest & {
   tenantId: string;
   userId?: string;
+  runId?: string;
   principalIds: string[];
   source?: SearchQuerySource;
   signal?: AbortSignal;
@@ -165,6 +166,7 @@ export class SearchService {
         inputs: [input.text],
         dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
         signal: input.signal,
+        context: modelCallContext(input),
       });
       timingsMs.embedding = Date.now() - embeddingStartedAt;
       if (!queryVector) throw new Error('Embedding model returned no query vector');
@@ -333,6 +335,7 @@ export class SearchService {
         documents: hits.map((hit) => ({ id: hit.chunkId, text: `${hit.title}\n${hit.content}` })),
         topN: candidateLimit,
         signal: input.signal,
+        context: modelCallContext(input),
       });
       timingsMs.rerank = Date.now() - rerankStartedAt;
       const hitsById = new Map(hits.map((hit) => [hit.chunkId, hit]));
@@ -707,6 +710,15 @@ function errorCode(error: unknown): string {
 function round(value: number, digits: number): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
+}
+
+function modelCallContext(input: SearchCommand) {
+  return {
+    tenantId: input.tenantId,
+    userId: input.userId,
+    runId: input.runId,
+    source: input.source === 'answer' ? ('answer' as const) : ('search' as const),
+  };
 }
 
 export function reciprocalRankFusion(rankings: RankedChunk[][], rankConstant = 60): RankedChunk[] {

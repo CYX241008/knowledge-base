@@ -29,7 +29,7 @@ pnpm dev
 
 系统治理页位于 `/admin/settings`。系统管理员可以热更新租户检索候选窗口、最低相关性、默认分页数、反馈开关与审计保留周期，并查看完整租户审计日志；知识管理员可以只读查看运行配置以及近 7/30/90 天的检索质量、用户反馈和模型成本。模型、索引、上传限制等部署级配置在页面中只读展示，仍由环境变量和部署流程管理。搜索响应会返回查询事件 ID，全文搜索页据此收集有用/无用反馈及问题原因。
 
-外部模型适配器提供每分钟请求上限、并发队列、指数退避、三态熔断、超时和取消传播。熔断恢复窗口结束后只放行有限的 half-open 探针，达到连续成功阈值后才恢复正常流量，探针失败会立即重新打开熔断器；启用 Redis 模型配额后，API 和 Worker 多副本还会共享按 operation/model 隔离的熔断状态。`GET /api/metrics/models` 汇总调用状态、重试次数、总延迟、首 token 延迟、token 用量和估算成本。当前向量列固定为 384 维；健康检查会同时验证 PostgreSQL 列类型和模型探针，生产环境强制设置 `MODEL_VALIDATE_ON_STARTUP=true`。
+外部模型适配器提供每分钟请求上限、全局/租户/用户/operation-model TPM 预留与结算、并发队列、指数退避、三态熔断、超时和取消传播。每次 provider attempt 都独立占用 RPM/TPM；成功后按实际 usage 结算，usage 缺失或请求失败时保留保守估算。熔断恢复窗口结束后只放行有限的 half-open 探针，达到连续成功阈值后才恢复正常流量，探针失败会立即重新打开熔断器。启用 Redis 模型配额后，API 和 Worker 多副本共享配额与熔断状态。模型调用事件持久化到 PostgreSQL，租户质量页按所选时间窗口汇总 API 与 Worker 的 token 用量和估算成本；`GET /api/metrics/models` 仍提供当前 API 进程的实时运行快照。当前向量列固定为 384 维；健康检查会同时验证 PostgreSQL 列类型和模型探针，生产环境强制设置 `MODEL_VALIDATE_ON_STARTUP=true`。
 
 API 身份只从服务端鉴权上下文取得，客户端提交的 `tenantId`、`createdBy` 和检索 `principalIds` 不参与授权。开发默认 `AUTH_MODE=demo`，固定身份来自 `AUTH_DEMO_*`；生产环境强制 `AUTH_MODE=jwt`，并通过 `AUTH_JWT_JWKS_URL`、issuer、audience 和声明名校验 Bearer JWT。租户级能力保存在 `permissionKeys`，资源 ACL 主体保存在 `principalIds`，停用的租户或用户会被拒绝。新文档默认仅创建者可读，文档直接 ACL 与空间/文件夹继承 ACL 分开维护。完整设计见 `docs/access-control-design.md`。
 

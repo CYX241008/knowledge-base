@@ -19,6 +19,11 @@ const numberFromBigint = {
   from: (value: string | number): number => Number(value),
 };
 
+const numberFromNumeric = {
+  to: (value: number): number => value,
+  from: (value: string | number): number => Number(value),
+};
+
 @Entity('tenant')
 export class TenantEntity {
   @PrimaryColumn('uuid')
@@ -899,6 +904,89 @@ export class ChatCitationEntity {
   createdAt!: Date;
 }
 
+export type ModelUsageOperation = 'embedding' | 'chat' | 'rerank';
+export type ModelUsageCallStatus = 'success' | 'error' | 'cancelled' | 'rejected';
+export type ModelUsageAttemptStatus = 'success' | 'error' | 'cancelled' | 'rejected';
+export type ModelUsageSource = 'provider' | 'estimated' | 'reserved';
+
+@Entity('model_usage_event')
+@Index(['tenantId', 'createdAt'])
+@Index(['tenantId', 'operation', 'model', 'createdAt'])
+@Index(['runId', 'createdAt'])
+@Index(['callId', 'attempt'], { unique: true })
+export class ModelUsageEventEntity {
+  @PrimaryColumn('uuid')
+  id!: string;
+
+  @Column('uuid', { name: 'call_id' })
+  callId!: string;
+
+  @Column('uuid', { name: 'tenant_id', nullable: true })
+  tenantId!: string | null;
+
+  @Column('uuid', { name: 'user_id', nullable: true })
+  userId!: string | null;
+
+  @Column('uuid', { name: 'run_id', nullable: true })
+  runId!: string | null;
+
+  @Column('varchar', { length: 32, nullable: true })
+  source!: string | null;
+
+  @Column('varchar', { length: 16 })
+  operation!: ModelUsageOperation;
+
+  @Column('varchar', { length: 128 })
+  model!: string;
+
+  @Column('integer')
+  attempt!: number;
+
+  @Column('varchar', { name: 'call_status', length: 16 })
+  callStatus!: ModelUsageCallStatus;
+
+  @Column('varchar', { name: 'attempt_status', length: 16 })
+  attemptStatus!: ModelUsageAttemptStatus;
+
+  @Column('varchar', { name: 'usage_source', length: 16 })
+  usageSource!: ModelUsageSource;
+
+  @Column('integer', { name: 'reserved_tokens' })
+  reservedTokens!: number;
+
+  @Column('integer', { name: 'input_tokens' })
+  inputTokens!: number;
+
+  @Column('integer', { name: 'output_tokens' })
+  outputTokens!: number;
+
+  @Column('integer', { name: 'total_tokens' })
+  totalTokens!: number;
+
+  @Column('numeric', {
+    name: 'estimated_cost_usd',
+    precision: 20,
+    scale: 10,
+    transformer: numberFromNumeric,
+  })
+  estimatedCostUsd!: number;
+
+  @Column('integer', { name: 'attempt_duration_ms' })
+  attemptDurationMs!: number;
+
+  @Column('integer', { name: 'call_duration_ms' })
+  callDurationMs!: number;
+
+  @Column('integer', { name: 'first_token_duration_ms', nullable: true })
+  firstTokenDurationMs!: number | null;
+
+  @Column('varchar', { name: 'error_code', length: 128, nullable: true })
+  errorCode!: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt!: Date;
+}
+
 @Entity('answer_run')
 @Index(['tenantId', 'conversationId', 'startedAt'])
 @Index(['tenantId', 'status', 'startedAt'])
@@ -1107,6 +1195,7 @@ export const databaseEntities = [
   ChatConversationEntity,
   ChatMessageEntity,
   ChatCitationEntity,
+  ModelUsageEventEntity,
   AnswerRunEntity,
   IngestionJobEntity,
   IngestionStageEntity,

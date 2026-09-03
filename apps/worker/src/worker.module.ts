@@ -18,6 +18,7 @@ import {
   DocumentVersionEntity,
   IngestionJobEntity,
   IngestionStageEntity,
+  ModelUsageEventEntity,
 } from '@knowledge-base/database';
 import { ObjectStorage } from '@knowledge-base/object-storage';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -27,6 +28,7 @@ import { OrphanObjectCleanupService } from './orphan-object-cleanup.service';
 import { SearchProjectionService } from './search-projection.service';
 import { OBJECT_STORAGE } from './worker.constants';
 import { ModelQuotaService } from './model-quota.service';
+import { ModelMetricsService } from './model-metrics.service';
 import { DocumentAclProjectionProcessor } from './document-acl-projection.processor';
 import { DocumentSearchProjectionProcessor } from './document-search-projection.processor';
 
@@ -56,6 +58,7 @@ import { DocumentSearchProjectionProcessor } from './document-search-projection.
       DocumentSourceAnchorEntity,
       IngestionJobEntity,
       IngestionStageEntity,
+      ModelUsageEventEntity,
     ]),
     BullModule.registerQueue(
       { name: DOCUMENT_INGESTION_QUEUE },
@@ -87,6 +90,7 @@ import { DocumentSearchProjectionProcessor } from './document-search-projection.
     DocumentSearchProjectionProcessor,
     OrphanObjectCleanupService,
     ModelQuotaService,
+    ModelMetricsService,
     SearchProjectionService,
   ],
 })
