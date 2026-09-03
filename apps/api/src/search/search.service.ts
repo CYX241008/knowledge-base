@@ -103,14 +103,24 @@ export class SearchService {
       apiKey: this.config.get('MODEL_API_KEY'),
       dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
       timeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
-      ...modelRuntimeOptions(this.config, this.modelMetrics.observe, this.modelQuota?.rateLimiter),
+      ...modelRuntimeOptions(
+        this.config,
+        this.modelMetrics.observe,
+        this.modelQuota?.rateLimiter,
+        this.modelQuota?.circuitBreaker,
+      ),
     });
     this.reranker = createRerankGateway({
       provider: this.config.getOrThrow('RERANKER_PROVIDER'),
       url: this.config.get('RERANKER_URL'),
       apiKey: this.config.get('RERANKER_API_KEY'),
       timeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
-      ...modelRuntimeOptions(this.config, this.modelMetrics.observe, this.modelQuota?.rateLimiter),
+      ...modelRuntimeOptions(
+        this.config,
+        this.modelMetrics.observe,
+        this.modelQuota?.rateLimiter,
+        this.modelQuota?.circuitBreaker,
+      ),
     });
     this.keywordIndex = new ElasticsearchChunkIndex(
       this.config.getOrThrow('ELASTICSEARCH_URL'),

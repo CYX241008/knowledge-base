@@ -1,3 +1,19 @@
+import {
+  LocalModelCircuitBreaker,
+  type ModelCircuitBreaker,
+  type ModelCircuitBreakerInput,
+  type ModelCircuitPermit,
+} from './circuit-breaker.js';
+
+export {
+  LocalModelCircuitBreaker,
+  type ModelCircuitBreaker,
+  type ModelCircuitBreakerInput,
+  type ModelCircuitDecision,
+  type ModelCircuitPermit,
+  type ModelCircuitState,
+} from './circuit-breaker.js';
+
 export type EmbeddingRequest = {
   model: string;
   inputs: string[];
@@ -66,8 +82,12 @@ export type ModelResilienceOptions = {
   rateLimiter?: ModelRateLimiter;
   maxRetries?: number;
   retryBaseDelayMs?: number;
+  circuitBreaker?: ModelCircuitBreaker;
   circuitFailureThreshold?: number;
   circuitResetMs?: number;
+  circuitHalfOpenMaxRequests?: number;
+  circuitHalfOpenSuccessThreshold?: number;
+  circuitHalfOpenProbeTimeoutMs?: number;
   onMetric?: ModelCallObserver;
 };
 
@@ -174,10 +194,10 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
         throw new Error('Embedding response count does not match inputs');
       if (vectors.some((vector) => vector.length !== (request.dimensions ?? this.dimensions)))
         throw new Error('Embedding response dimension does not match configuration');
-      scope.succeed(normalizeUsage(payload.usage));
+      await scope.succeed(normalizeUsage(payload.usage));
       return vectors;
     } catch (error) {
-      scope.fail(error);
+      await scope.fail(error);
       throw error;
     }
   }
@@ -248,12 +268,12 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
           yield parsed.token;
         }
       }
-      scope.succeed(usage, outputCharacters);
+      await scope.succeed(usage, outputCharacters);
     } catch (error) {
-      scope.fail(error, outputCharacters);
+      await scope.fail(error, outputCharacters);
       throw error;
     } finally {
-      if (!scope.isClosed()) scope.fail(abortError(), outputCharacters);
+      if (!scope.isClosed()) await scope.fail(abortError(), outputCharacters);
     }
   }
 
@@ -388,10 +408,10 @@ export class HttpRerankGateway implements RerankGateway {
         if (!document) throw new Error(`Reranker returned invalid document index ${result.index}`);
         return { id: document.id, score: result.relevance_score };
       });
-      scope.succeed();
+      await scope.succeed();
       return results;
     } catch (error) {
-      scope.fail(error);
+      await scope.fail(error);
       throw error;
     }
   }
@@ -423,8 +443,12 @@ export function createEmbeddingGateway(
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
+    circuitBreaker: options.circuitBreaker,
     circuitFailureThreshold: options.circuitFailureThreshold,
     circuitResetMs: options.circuitResetMs,
+    circuitHalfOpenMaxRequests: options.circuitHalfOpenMaxRequests,
+    circuitHalfOpenSuccessThreshold: options.circuitHalfOpenSuccessThreshold,
+    circuitHalfOpenProbeTimeoutMs: options.circuitHalfOpenProbeTimeoutMs,
     includeUsage: options.includeUsage,
     onMetric: options.onMetric,
   });
@@ -450,8 +474,12 @@ export function createRerankGateway(
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
+    circuitBreaker: options.circuitBreaker,
     circuitFailureThreshold: options.circuitFailureThreshold,
     circuitResetMs: options.circuitResetMs,
+    circuitHalfOpenMaxRequests: options.circuitHalfOpenMaxRequests,
+    circuitHalfOpenSuccessThreshold: options.circuitHalfOpenSuccessThreshold,
+    circuitHalfOpenProbeTimeoutMs: options.circuitHalfOpenProbeTimeoutMs,
     onMetric: options.onMetric,
   });
 }
@@ -473,8 +501,12 @@ export function createChatGateway(
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
+    circuitBreaker: options.circuitBreaker,
     circuitFailureThreshold: options.circuitFailureThreshold,
     circuitResetMs: options.circuitResetMs,
+    circuitHalfOpenMaxRequests: options.circuitHalfOpenMaxRequests,
+    circuitHalfOpenSuccessThreshold: options.circuitHalfOpenSuccessThreshold,
+    circuitHalfOpenProbeTimeoutMs: options.circuitHalfOpenProbeTimeoutMs,
     includeUsage: options.includeUsage,
     onMetric: options.onMetric,
   });
@@ -508,7 +540,10 @@ function parseChatEvent(event: string): {
 }
 
 export class ModelGatewayUnavailableError extends Error {
-  constructor() {
+  constructor(
+    readonly circuitState: 'open' | 'half-open' = 'open',
+    readonly retryAfterMs?: number,
+  ) {
     super('Model gateway circuit is open');
     this.name = 'ModelGatewayUnavailableError';
   }
@@ -548,12 +583,14 @@ type CallContext = {
 class ResilienceController {
   private readonly gate: ConcurrencyGate;
   private readonly rateLimiter: ModelRateLimiter;
+  private readonly circuitBreaker: ModelCircuitBreaker;
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
   private readonly circuitFailureThreshold: number;
   private readonly circuitResetMs: number;
-  private failureCount = 0;
-  private openUntil = 0;
+  private readonly circuitHalfOpenMaxRequests: number;
+  private readonly circuitHalfOpenSuccessThreshold: number;
+  private readonly circuitHalfOpenProbeTimeoutMs: number;
 
   constructor(private readonly options: ModelResilienceOptions) {
     this.gate = new ConcurrencyGate(
@@ -561,10 +598,23 @@ class ResilienceController {
       Math.max(0, Math.floor(options.maxQueueSize ?? 100)),
     );
     this.rateLimiter = options.rateLimiter ?? new FixedWindowRateLimiter();
+    this.circuitBreaker = options.circuitBreaker ?? new LocalModelCircuitBreaker();
     this.maxRetries = Math.max(0, Math.floor(options.maxRetries ?? 2));
     this.retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? 250);
     this.circuitFailureThreshold = Math.max(1, Math.floor(options.circuitFailureThreshold ?? 5));
     this.circuitResetMs = Math.max(0, options.circuitResetMs ?? 30_000);
+    this.circuitHalfOpenMaxRequests = Math.max(
+      1,
+      Math.floor(options.circuitHalfOpenMaxRequests ?? 1),
+    );
+    this.circuitHalfOpenSuccessThreshold = Math.max(
+      1,
+      Math.floor(options.circuitHalfOpenSuccessThreshold ?? 2),
+    );
+    this.circuitHalfOpenProbeTimeoutMs = Math.max(
+      1,
+      Math.floor(options.circuitHalfOpenProbeTimeoutMs ?? 90_000),
+    );
   }
 
   async open(context: CallContext): Promise<ModelCallScope> {
@@ -573,9 +623,17 @@ class ResilienceController {
       this.emit(context, 'cancelled', startedAt, 0, 0);
       throw abortError(context.signal.reason);
     }
-    if (Date.now() < this.openUntil) {
+    const circuitInput = this.circuitInput(context);
+    let circuitDecision;
+    try {
+      circuitDecision = await this.circuitBreaker.acquire(circuitInput);
+    } catch (error) {
       this.emit(context, 'rejected', startedAt, 0, 0);
-      throw new ModelGatewayUnavailableError();
+      throw error;
+    }
+    if (!circuitDecision.allowed) {
+      this.emit(context, 'rejected', startedAt, 0, 0);
+      throw new ModelGatewayUnavailableError(circuitDecision.state, circuitDecision.retryAfterMs);
     }
     try {
       const decision = await this.rateLimiter.consume({
@@ -585,24 +643,34 @@ class ResilienceController {
       });
       if (!decision.allowed) throw new ModelGatewayRateLimitError(decision.retryAfterMs);
       const release = await this.gate.acquire(context.signal);
-      return new ModelCallScope(this, context, release, startedAt);
+      return new ModelCallScope(
+        this,
+        context,
+        release,
+        startedAt,
+        circuitInput,
+        circuitDecision.permit,
+      );
     } catch (error) {
+      await this.releaseCircuit(circuitInput, circuitDecision.permit);
       this.emit(context, isAbortError(error) ? 'cancelled' : 'rejected', startedAt, 0, 0);
       throw error;
     }
   }
 
-  callSucceeded(
+  async callSucceeded(
     context: CallContext,
     release: () => void,
     startedAt: number,
     attempts: number,
+    circuitInput: ModelCircuitBreakerInput,
+    circuitPermit: ModelCircuitPermit,
     usage?: ModelTokenUsage,
     outputCharacters = 0,
     firstTokenDurationMs?: number,
-  ): void {
-    this.failureCount = 0;
+  ): Promise<void> {
     release();
+    await this.reportCircuit(() => this.circuitBreaker.succeed(circuitInput, circuitPermit));
     this.emit(
       context,
       'success',
@@ -614,22 +682,23 @@ class ResilienceController {
     );
   }
 
-  callFailed(
+  async callFailed(
     context: CallContext,
     release: () => void,
     startedAt: number,
     attempts: number,
+    circuitInput: ModelCircuitBreakerInput,
+    circuitPermit: ModelCircuitPermit,
     error: unknown,
     outputCharacters = 0,
     firstTokenDurationMs?: number,
-  ): void {
-    if (isRetryableError(error) && !context.signal?.aborted) {
-      this.failureCount += 1;
-      if (this.failureCount >= this.circuitFailureThreshold) {
-        this.openUntil = Date.now() + this.circuitResetMs;
-      }
-    }
+  ): Promise<void> {
     release();
+    if (isRetryableError(error) && !context.signal?.aborted) {
+      await this.reportCircuit(() => this.circuitBreaker.fail(circuitInput, circuitPermit));
+    } else {
+      await this.releaseCircuit(circuitInput, circuitPermit);
+    }
     this.emit(
       context,
       context.signal?.aborted || isAbortError(error) ? 'cancelled' : 'error',
@@ -641,8 +710,41 @@ class ResilienceController {
     );
   }
 
-  retrySettings(): { maxRetries: number; retryBaseDelayMs: number } {
-    return { maxRetries: this.maxRetries, retryBaseDelayMs: this.retryBaseDelayMs };
+  retrySettings(circuitPermit: ModelCircuitPermit): {
+    maxRetries: number;
+    retryBaseDelayMs: number;
+  } {
+    return {
+      maxRetries: circuitPermit.state === 'half-open' ? 0 : this.maxRetries,
+      retryBaseDelayMs: this.retryBaseDelayMs,
+    };
+  }
+
+  private circuitInput(context: CallContext): ModelCircuitBreakerInput {
+    return {
+      operation: context.operation,
+      model: context.model,
+      failureThreshold: this.circuitFailureThreshold,
+      resetMs: this.circuitResetMs,
+      halfOpenMaxRequests: this.circuitHalfOpenMaxRequests,
+      halfOpenSuccessThreshold: this.circuitHalfOpenSuccessThreshold,
+      halfOpenProbeTimeoutMs: this.circuitHalfOpenProbeTimeoutMs,
+    };
+  }
+
+  private async releaseCircuit(
+    input: ModelCircuitBreakerInput,
+    permit: ModelCircuitPermit,
+  ): Promise<void> {
+    await this.reportCircuit(() => this.circuitBreaker.release(input, permit));
+  }
+
+  private async reportCircuit(report: () => Promise<void>): Promise<void> {
+    try {
+      await report();
+    } catch {
+      // Circuit reporting must not change an already completed model call.
+    }
   }
 
   private emit(
@@ -678,10 +780,12 @@ class ModelCallScope {
     private readonly context: CallContext,
     private readonly release: () => void,
     private readonly startedAt: number,
+    private readonly circuitInput: ModelCircuitBreakerInput,
+    private readonly circuitPermit: ModelCircuitPermit,
   ) {}
 
   async retry<T>(operation: () => Promise<T>): Promise<T> {
-    const { maxRetries, retryBaseDelayMs } = this.controller.retrySettings();
+    const { maxRetries, retryBaseDelayMs } = this.controller.retrySettings(this.circuitPermit);
     while (true) {
       if (this.context.signal?.aborted) throw abortError(this.context.signal.reason);
       this.attempts += 1;
@@ -700,28 +804,32 @@ class ModelCallScope {
     }
   }
 
-  succeed(usage?: ModelTokenUsage, outputCharacters = 0): void {
+  async succeed(usage?: ModelTokenUsage, outputCharacters = 0): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.controller.callSucceeded(
+    await this.controller.callSucceeded(
       this.context,
       this.release,
       this.startedAt,
       this.attempts,
+      this.circuitInput,
+      this.circuitPermit,
       usage,
       outputCharacters,
       this.firstTokenDurationMs,
     );
   }
 
-  fail(error: unknown, outputCharacters = 0): void {
+  async fail(error: unknown, outputCharacters = 0): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.controller.callFailed(
+    await this.controller.callFailed(
       this.context,
       this.release,
       this.startedAt,
       this.attempts,
+      this.circuitInput,
+      this.circuitPermit,
       error,
       outputCharacters,
       this.firstTokenDurationMs,
@@ -756,6 +864,10 @@ class FixedWindowRateLimiter {
 }
 
 export { RedisModelRateLimiter, type RedisModelRateLimiterOptions } from './redis-rate-limiter.js';
+export {
+  RedisModelCircuitBreaker,
+  type RedisModelCircuitBreakerOptions,
+} from './redis-circuit-breaker.js';
 
 class ConcurrencyGate {
   private active = 0;

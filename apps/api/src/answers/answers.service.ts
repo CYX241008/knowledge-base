@@ -49,7 +49,12 @@ export class AnswersService {
       apiKey: this.config.get('MODEL_API_KEY'),
       dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
       timeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
-      ...modelRuntimeOptions(this.config, this.modelMetrics.observe, this.modelQuota?.rateLimiter),
+      ...modelRuntimeOptions(
+        this.config,
+        this.modelMetrics.observe,
+        this.modelQuota?.rateLimiter,
+        this.modelQuota?.circuitBreaker,
+      ),
     });
   }
 

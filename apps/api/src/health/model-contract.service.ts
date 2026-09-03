@@ -26,7 +26,12 @@ export class ModelContractService implements OnModuleInit {
     @Inject(ModelMetricsService) modelMetrics: ModelMetricsService,
     @Inject(ModelQuotaService) modelQuota: ModelQuotaService,
   ) {
-    const runtime = modelRuntimeOptions(this.config, modelMetrics.observe, modelQuota.rateLimiter);
+    const runtime = modelRuntimeOptions(
+      this.config,
+      modelMetrics.observe,
+      modelQuota.rateLimiter,
+      modelQuota.circuitBreaker,
+    );
     this.embedding = createEmbeddingGateway({
       provider: this.config.getOrThrow('MODEL_PROVIDER'),
       baseUrl: this.config.get('MODEL_BASE_URL'),

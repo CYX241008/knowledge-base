@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   LOCAL_HASH_EMBEDDING_DIMENSIONS,
   LOCAL_HASH_EMBEDDING_MODEL,
@@ -41,6 +41,10 @@ describe('LocalHashEmbeddingGateway', () => {
 });
 
 describe('OpenAICompatibleModelGateway', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('requests configured dimensions and preserves embedding order', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json({
@@ -153,6 +157,41 @@ describe('OpenAICompatibleModelGateway', () => {
     ).rejects.toBeInstanceOf(ModelGatewayUnavailableError);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(metrics.map((metric) => metric.status)).toEqual(['error', 'rejected']);
+  });
+
+  it('does not retry a half-open probe and reopens after its failure', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-03T00:00:00.000Z'));
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => new Response('unavailable', { status: 503 }));
+    const gateway = new OpenAICompatibleModelGateway({
+      baseUrl: 'https://models.example/v1',
+      apiKey: 'secret',
+      dimensions: 2,
+      fetcher,
+      maxRetries: 2,
+      retryBaseDelayMs: 0,
+      circuitFailureThreshold: 1,
+      circuitResetMs: 1_000,
+    });
+
+    await expect(gateway.embed({ model: 'embedding-model', inputs: ['open'] })).rejects.toThrow(
+      '503',
+    );
+    expect(fetcher).toHaveBeenCalledTimes(3);
+
+    vi.advanceTimersByTime(1_000);
+    await expect(gateway.embed({ model: 'embedding-model', inputs: ['probe'] })).rejects.toThrow(
+      '503',
+    );
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    await expect(
+      gateway.embed({ model: 'embedding-model', inputs: ['blocked'] }),
+    ).rejects.toMatchObject({
+      circuitState: 'open',
+      retryAfterMs: 1_000,
+    });
   });
 
   it('bounds concurrent work and its waiting queue', async () => {

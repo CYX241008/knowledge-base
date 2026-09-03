@@ -4,7 +4,7 @@
 
 本阶段将 PostgreSQL 和 MinIO 视为事实源，将 Elasticsearch 视为可重建投影，将 Redis 视为队列、限流和短期状态。仓库不会保存真实 JWT、模型密钥、数据库密码或备份文件。
 
-生产多副本必须设置 `MODEL_RATE_LIMIT_BACKEND=redis`。Redis Lua 脚本按 `namespace + operation + model` 原子累计每分钟请求数，API 和 Worker 副本共享同一配额。`MODEL_RATE_LIMIT_FAIL_OPEN=false` 是默认生产策略；只有在业务明确接受模型超额调用时才允许打开。
+生产多副本必须设置 `MODEL_RATE_LIMIT_BACKEND=redis`。Redis Lua 脚本按 `namespace + operation + model` 原子累计每分钟请求数，并协调 `closed/open/half-open` 熔断状态，API 和 Worker 副本共享同一配额与探针名额。`MODEL_RATE_LIMIT_FAIL_OPEN=false` 是默认生产策略；只有在业务明确接受 Redis 故障期间退回进程内配额与熔断状态时才允许打开。
 
 ## 2. 预发布配置
 
@@ -34,10 +34,15 @@ MODEL_RATE_LIMIT_BACKEND=redis
 MODEL_REQUESTS_PER_MINUTE=600
 MODEL_RATE_LIMIT_NAMESPACE=knowledge-base-staging
 MODEL_RATE_LIMIT_FAIL_OPEN=false
+MODEL_CIRCUIT_FAILURE_THRESHOLD=5
+MODEL_CIRCUIT_RESET_MS=30000
+MODEL_CIRCUIT_HALF_OPEN_MAX_REQUESTS=1
+MODEL_CIRCUIT_HALF_OPEN_SUCCESS_THRESHOLD=2
+MODEL_CIRCUIT_HALF_OPEN_PROBE_TIMEOUT_MS=90000
 REDIS_URL=rediss://<managed-redis-endpoint>
 ```
 
-启动时会验证数据库 `vector(384)`、Embedding 输出维度、Chat 流式输出、Reranker 响应以及配额 Redis。任一探针失败时，生产实例不能通过健康检查。
+启动时会验证数据库 `vector(384)`、Embedding 输出维度、Chat 流式输出、Reranker 响应以及模型协调 Redis。任一探针失败时，生产实例不能通过健康检查。
 
 ## 3. IdP 与模型验收
 
@@ -114,7 +119,7 @@ DRILL_CONFIRM=knowledge-base pnpm drill:dependency -- minio
 
 Worker 演练：停止全部 Worker，上传测试文档并确认任务保持 `queued`，恢复一个 Worker 后确认任务完成且不产生重复版本或分片。
 
-模型演练：在预发布模型网关或网络代理上依次注入 429、503、超时和流式中断，确认指标出现重试、熔断、取消与首 token 延迟；恢复服务后等待熔断窗口结束并再次执行 `pnpm verify:staging`。不要通过提交错误密钥来做演练。
+模型演练：在预发布模型网关或网络代理上依次注入 429、503、超时和流式中断，确认指标出现重试、熔断、取消与首 token 延迟。恢复服务后等待熔断窗口结束，同时发起多路请求，确认只有 `MODEL_CIRCUIT_HALF_OPEN_MAX_REQUESTS` 个探针进入下游；探针连续成功达到 `MODEL_CIRCUIT_HALF_OPEN_SUCCESS_THRESHOLD` 后，再执行 `pnpm verify:staging`。探针失败时应立即重新进入 open 窗口；探针实例异常退出时，Redis 名额应在 `MODEL_CIRCUIT_HALF_OPEN_PROBE_TIMEOUT_MS` 后可重新获取。不要通过提交错误密钥来做演练。
 
 ## 7. 验收记录
 

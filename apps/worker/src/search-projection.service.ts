@@ -60,10 +60,18 @@ export class SearchProjectionService {
       maxQueueSize: this.config.getOrThrow('MODEL_MAX_QUEUE_SIZE'),
       requestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
       rateLimiter: this.modelQuota.rateLimiter,
+      circuitBreaker: this.modelQuota.circuitBreaker,
       maxRetries: this.config.getOrThrow('MODEL_MAX_RETRIES'),
       retryBaseDelayMs: this.config.getOrThrow('MODEL_RETRY_BASE_DELAY_MS'),
       circuitFailureThreshold: this.config.getOrThrow('MODEL_CIRCUIT_FAILURE_THRESHOLD'),
       circuitResetMs: this.config.getOrThrow('MODEL_CIRCUIT_RESET_MS'),
+      circuitHalfOpenMaxRequests: this.config.getOrThrow('MODEL_CIRCUIT_HALF_OPEN_MAX_REQUESTS'),
+      circuitHalfOpenSuccessThreshold: this.config.getOrThrow(
+        'MODEL_CIRCUIT_HALF_OPEN_SUCCESS_THRESHOLD',
+      ),
+      circuitHalfOpenProbeTimeoutMs: this.config.getOrThrow(
+        'MODEL_CIRCUIT_HALF_OPEN_PROBE_TIMEOUT_MS',
+      ),
       includeUsage: this.config.getOrThrow('MODEL_STREAM_INCLUDE_USAGE'),
       onMetric: (metric) => logEvent('model.call', metric),
     });
