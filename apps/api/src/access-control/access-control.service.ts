@@ -9,12 +9,21 @@ import {
 } from '@nestjs/common';
 import type {
   AccessOverviewResponse,
+  AccessPermissionKey,
+  AccessPrincipalDirectoryResponse,
   AssignDepartmentMembersRequest,
   AssignMemberRolesRequest,
   CreateAccessRoleRequest,
   CreateDepartmentRequest,
+  DocumentAclGrant,
+  DocumentResourcePermissionKey,
   ReplaceDocumentAclResponse,
+  TenantAccessPermissionKey,
   UpsertOrganizationMemberRequest,
+} from '@knowledge-base/contracts';
+import {
+  documentResourcePermissionKeys,
+  tenantAccessPermissionKeys,
 } from '@knowledge-base/contracts';
 import {
   AccessPermissionEntity,
@@ -60,6 +69,7 @@ export class AccessControlService {
       userRoles,
       rolePermissions,
       departmentMembers,
+      documentAclRows,
     ] = await Promise.all([
       this.dataSource.getRepository(TenantEntity).findOneBy({ id: auth.tenantId }),
       this.dataSource.getRepository(AppUserEntity).find({
@@ -83,6 +93,13 @@ export class AccessControlService {
       this.dataSource.getRepository(UserRoleEntity).findBy({ tenantId: auth.tenantId }),
       this.dataSource.getRepository(RolePermissionEntity).find(),
       this.dataSource.getRepository(DepartmentMemberEntity).findBy({ tenantId: auth.tenantId }),
+      this.dataSource.getRepository(ResourceAclEntity).find({
+        where: {
+          tenantId: auth.tenantId,
+          resourceType: 'document',
+          permission: In([...documentResourcePermissionKeys]),
+        },
+      }),
     ]);
     if (!tenant) throw new NotFoundException(`Tenant ${auth.tenantId} not found`);
 
@@ -105,13 +122,15 @@ export class AccessControlService {
         isSystem: role.isSystem,
         permissionKeys: rolePermissions
           .filter((item) => item.roleId === role.id)
-          .map((item) => item.permissionKey),
+          .map((item) => item.permissionKey)
+          .filter(isTenantPermissionKey),
         memberCount: userRoles.filter((item) => item.roleId === role.id).length,
       })),
       permissions: permissions.map((permission) => ({
         key: permission.key,
         name: permission.name,
         description: permission.description,
+        scope: permission.scope,
       })),
       departments: departments.map((department) => ({
         id: department.id,
@@ -126,8 +145,53 @@ export class AccessControlService {
         title: document.title,
         status: document.status,
         aclVersion: document.aclVersion,
+        directGrants: groupDocumentAclGrants(
+          documentAclRows.filter((row) => row.resourceId === document.id),
+        ),
+        effectivePrincipalIds: uniqueAccessPrincipalIds(document.accessPrincipalIds),
         principalIds: uniqueAccessPrincipalIds(document.accessPrincipalIds),
       })),
+    };
+  }
+
+  async principalDirectory(auth: AuthContext): Promise<AccessPrincipalDirectoryResponse> {
+    this.assertKnowledgeAdministration(auth);
+    const [tenant, members, roles, departments] = await Promise.all([
+      this.dataSource.getRepository(TenantEntity).findOneBy({ id: auth.tenantId }),
+      this.dataSource.getRepository(AppUserEntity).find({
+        where: { tenantId: auth.tenantId, status: 'active' },
+        order: { displayName: 'ASC' },
+      }),
+      this.dataSource.getRepository(AccessRoleEntity).find({
+        where: { tenantId: auth.tenantId },
+        order: { name: 'ASC' },
+      }),
+      this.dataSource.getRepository(DepartmentEntity).find({
+        where: { tenantId: auth.tenantId },
+        order: { name: 'ASC' },
+      }),
+    ]);
+    if (!tenant) throw new NotFoundException(`Tenant ${auth.tenantId} not found`);
+    return {
+      tenant: { id: tenant.id, name: tenant.name },
+      principals: [
+        { id: `tenant:${tenant.id}`, type: 'tenant', label: tenant.name },
+        ...members.map((member) => ({
+          id: `user:${member.id}` as const,
+          type: 'user' as const,
+          label: member.displayName,
+        })),
+        ...roles.map((role) => ({
+          id: `role:${role.id}` as const,
+          type: 'role' as const,
+          label: role.name,
+        })),
+        ...departments.map((department) => ({
+          id: `department:${department.id}` as const,
+          type: 'department' as const,
+          label: department.name,
+        })),
+      ],
     };
   }
 
@@ -168,6 +232,13 @@ export class AccessControlService {
   async createRole(auth: AuthContext, input: CreateAccessRoleRequest): Promise<{ roleId: string }> {
     this.assertTenantAdministration(auth);
     const roleId = randomUUID();
+    const keys = [...new Set(input.permissionKeys)];
+    if (keys.some((key) => !tenantPermissionKeySet.has(key))) {
+      throw new BadRequestException({
+        code: 'RESOURCE_PERMISSION_NOT_ROLE_ASSIGNABLE',
+        message: 'Document resource permissions must be granted through a resource ACL',
+      });
+    }
     try {
       await this.dataSource.transaction(async (manager) => {
         await manager.getRepository(AccessRoleEntity).save(
@@ -179,7 +250,6 @@ export class AccessControlService {
             isSystem: false,
           }),
         );
-        const keys = [...new Set(input.permissionKeys)];
         if (keys.length > 0) {
           await manager
             .getRepository(RolePermissionEntity)
@@ -353,11 +423,14 @@ export class AccessControlService {
   async replaceDocumentAcl(
     auth: AuthContext,
     documentId: string,
-    principalIds: readonly string[],
+    grants: readonly DocumentAclGrant[],
   ): Promise<ReplaceDocumentAclResponse> {
-    await this.assertDocumentManage(auth, documentId, true);
-    const normalized = uniqueAccessPrincipalIds(principalIds);
-    await this.validatePrincipals(auth.tenantId, normalized);
+    await this.assertDocumentPermission(auth, documentId, 'documents.share');
+    const normalized = normalizeDocumentAclGrants(grants);
+    await this.validatePrincipals(
+      auth.tenantId,
+      normalized.map((grant) => grant.principalId),
+    );
 
     const response = await this.dataSource.transaction(async (manager) => {
       const documents = manager.getRepository(DocumentEntity);
@@ -371,12 +444,11 @@ export class AccessControlService {
         tenantId: auth.tenantId,
         resourceType: 'document',
         resourceId: documentId,
-        permission: 'documents.read',
+        permission: In([...documentResourcePermissionKeys]),
       });
-      await this.saveResourceReadAcl(
+      await this.saveDocumentAclGrants(
         manager,
         auth.tenantId,
-        'document',
         document.id,
         normalized,
         auth.userId,
@@ -388,11 +460,14 @@ export class AccessControlService {
       await documents.save(document);
       await this.createAclProjectionIntent(manager, document);
       await this.recordAudit(manager, auth, 'document.acl.replaced', 'document', document.id, {
-        principalIds: effectivePrincipalIds,
+        directGrants: normalized,
+        effectivePrincipalIds,
       });
       return {
         documentId,
         aclVersion: document.aclVersion,
+        directGrants: normalized,
+        effectivePrincipalIds,
         principalIds: effectivePrincipalIds,
         projectionStatus: 'queued' as const,
       };
@@ -435,35 +510,35 @@ export class AccessControlService {
     await this.recomputeDocumentEffectiveAcl(manager, document);
   }
 
-  async assertDocumentRead(auth: AuthContext, documentId: string): Promise<DocumentEntity> {
-    const document = await this.dataSource.getRepository(DocumentEntity).findOne({
-      where: { id: documentId, tenantId: auth.tenantId, deletedAt: IsNull() },
-    });
-    if (!document) throw new NotFoundException(`Document ${documentId} not found`);
-    if (!principalsOverlap(document.accessPrincipalIds, auth.principalIds)) {
-      throw new ForbiddenException({ code: 'DOCUMENT_ACCESS_DENIED', message: 'Access denied' });
-    }
-    return document;
-  }
-
-  async assertDocumentManage(
+  async assertDocumentPermission(
     auth: AuthContext,
     documentId: string,
-    requireShare = false,
+    permission: DocumentResourcePermissionKey,
   ): Promise<DocumentEntity> {
     const document = await this.dataSource.getRepository(DocumentEntity).findOne({
       where: { id: documentId, tenantId: auth.tenantId, deletedAt: IsNull() },
     });
     if (!document) throw new NotFoundException(`Document ${documentId} not found`);
     if (
-      auth.principalIds.includes('permission:access.manage') ||
-      document.createdBy === auth.userId
+      permission !== 'documents.read' &&
+      (this.hasPermission(auth, 'access.manage') || document.createdBy === auth.userId)
     ) {
       return document;
     }
-    const allowedPermissions = requireShare
-      ? ['documents.share', 'documents.manage']
-      : ['documents.update', 'documents.delete', 'documents.manage'];
+    if (
+      permission === 'documents.read' &&
+      principalsOverlap(document.accessPrincipalIds, auth.principalIds)
+    ) {
+      return document;
+    }
+    if (permission === 'documents.read') {
+      throw new ForbiddenException({
+        code: 'DOCUMENT_PERMISSION_DENIED',
+        message: 'Document permission documents.read is required',
+      });
+    }
+    const allowedPermissions =
+      permission === 'documents.manage' ? ['documents.manage'] : [permission, 'documents.manage'];
     const rows = await this.dataSource.query<Array<{ allowed: boolean }>>(
       `SELECT true AS allowed
        FROM resource_acl
@@ -473,49 +548,80 @@ export class AccessControlService {
       [auth.tenantId, documentId, auth.principalIds, allowedPermissions],
     );
     if (rows.length === 0) {
-      throw new ForbiddenException({ code: 'DOCUMENT_MANAGE_DENIED', message: 'Access denied' });
+      throw new ForbiddenException({
+        code: 'DOCUMENT_PERMISSION_DENIED',
+        message: `Document permission ${permission} is required`,
+      });
     }
     return document;
   }
 
-  assertTenantAdministration(auth: AuthContext): void {
-    if (!auth.principalIds.includes('permission:access.manage')) {
+  async assertDocumentRead(auth: AuthContext, documentId: string): Promise<DocumentEntity> {
+    return this.assertDocumentPermission(auth, documentId, 'documents.read');
+  }
+
+  async documentPermissions(
+    auth: AuthContext,
+    document: DocumentEntity,
+  ): Promise<DocumentResourcePermissionKey[]> {
+    const permissions = new Set<DocumentResourcePermissionKey>();
+    if (principalsOverlap(document.accessPrincipalIds, auth.principalIds)) {
+      permissions.add('documents.read');
+    }
+    if (this.hasPermission(auth, 'access.manage') || document.createdBy === auth.userId) {
+      for (const permission of documentResourcePermissionKeys) {
+        if (permission !== 'documents.read') permissions.add(permission);
+      }
+    }
+    const rows = await this.dataSource.getRepository(ResourceAclEntity).find({
+      where: {
+        tenantId: auth.tenantId,
+        resourceType: 'document',
+        resourceId: document.id,
+        principalId: In(auth.principalIds),
+        permission: In([...documentResourcePermissionKeys]),
+      },
+    });
+    for (const row of rows) {
+      permissions.add(row.permission as DocumentResourcePermissionKey);
+    }
+    if (permissions.has('documents.manage')) {
+      for (const permission of documentResourcePermissionKeys) {
+        if (permission !== 'documents.read') permissions.add(permission);
+      }
+    }
+    return [...permissions];
+  }
+
+  assertPermission(auth: AuthContext, permission: TenantAccessPermissionKey): void {
+    if (!this.hasPermission(auth, permission)) {
       throw new ForbiddenException({
-        code: 'ACCESS_ADMINISTRATION_DENIED',
-        message: 'Access-control administration permission is required',
+        code: 'TENANT_PERMISSION_DENIED',
+        message: `Tenant permission ${permission} is required`,
       });
     }
+  }
+
+  hasPermission(auth: AuthContext, permission: TenantAccessPermissionKey): boolean {
+    return (
+      auth.permissionKeys.includes('access.manage') || auth.permissionKeys.includes(permission)
+    );
+  }
+
+  assertTenantAdministration(auth: AuthContext): void {
+    this.assertPermission(auth, 'access.manage');
   }
 
   assertKnowledgeAdministration(auth: AuthContext): void {
-    if (
-      !auth.principalIds.includes('permission:knowledge.manage') &&
-      !auth.principalIds.includes('permission:access.manage')
-    ) {
-      throw new ForbiddenException({
-        code: 'KNOWLEDGE_ADMINISTRATION_DENIED',
-        message: 'Knowledge organization permission is required',
-      });
-    }
+    this.assertPermission(auth, 'knowledge.manage');
   }
 
   assertDocumentReview(auth: AuthContext): void {
-    if (
-      !auth.principalIds.includes('permission:documents.review') &&
-      !auth.principalIds.includes('permission:access.manage')
-    ) {
-      throw new ForbiddenException({
-        code: 'DOCUMENT_REVIEW_DENIED',
-        message: 'Document review permission is required',
-      });
-    }
+    this.assertPermission(auth, 'documents.review');
   }
 
   canEditSystemSettings(auth: AuthContext): boolean {
-    return (
-      auth.principalIds.includes('permission:system.manage') ||
-      auth.principalIds.includes('permission:access.manage')
-    );
+    return this.hasPermission(auth, 'system.manage');
   }
 
   assertSystemAdministration(auth: AuthContext): void {
@@ -528,10 +634,7 @@ export class AccessControlService {
   }
 
   assertGovernanceRead(auth: AuthContext): void {
-    if (
-      !this.canEditSystemSettings(auth) &&
-      !auth.principalIds.includes('permission:knowledge.manage')
-    ) {
+    if (!this.canEditSystemSettings(auth) && !this.hasPermission(auth, 'knowledge.manage')) {
       throw new ForbiddenException({
         code: 'GOVERNANCE_READ_DENIED',
         message: 'Knowledge governance permission is required',
@@ -563,6 +666,32 @@ export class AccessControlService {
         };
       }),
     );
+  }
+
+  async saveDocumentAclGrants(
+    manager: EntityManager,
+    tenantId: string,
+    documentId: string,
+    grants: readonly DocumentAclGrant[],
+    createdBy: string | null,
+  ): Promise<void> {
+    const rows = grants.flatMap((grant) =>
+      grant.permissions.map((permission) => {
+        const principal = parseAccessPrincipalId(grant.principalId);
+        if (!principal) throw new BadRequestException('Invalid access principal');
+        return {
+          id: randomUUID(),
+          tenantId,
+          resourceType: 'document' as const,
+          resourceId: documentId,
+          principalType: principal.type,
+          principalId: grant.principalId,
+          permission,
+          createdBy,
+        };
+      }),
+    );
+    if (rows.length > 0) await manager.getRepository(ResourceAclEntity).save(rows);
   }
 
   async replaceResourceReadAcl(
@@ -621,7 +750,10 @@ export class AccessControlService {
               END AS priority
        FROM resource_acl acl
        LEFT JOIN folder_ancestors folder ON acl.resource_type = 'folder' AND folder.id = acl.resource_id
-       WHERE acl.tenant_id = $1 AND acl.permission = 'documents.read'
+       WHERE acl.tenant_id = $1
+         AND (
+           acl.permission = 'documents.read'
+         )
          AND (
            (acl.resource_type = 'document' AND acl.resource_id = $2)
            OR (acl.resource_type = 'space' AND acl.resource_id = $3)
@@ -752,6 +884,7 @@ export class AccessControlService {
     const count = await manager.getRepository(AppUserEntity).countBy({
       tenantId,
       id: In([...new Set(ids)]),
+      status: 'active',
     });
     if (count !== new Set(ids).size) this.invalidPrincipal();
   }
@@ -792,4 +925,36 @@ export class AccessControlService {
 
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
+}
+
+const tenantPermissionKeySet = new Set<AccessPermissionKey>(tenantAccessPermissionKeys);
+
+function isTenantPermissionKey(key: AccessPermissionKey): key is TenantAccessPermissionKey {
+  return tenantPermissionKeySet.has(key);
+}
+
+function normalizeDocumentAclGrants(grants: readonly DocumentAclGrant[]): DocumentAclGrant[] {
+  const permissionsByPrincipal = new Map<string, Set<DocumentResourcePermissionKey>>();
+  for (const grant of grants) {
+    const principalId = uniqueAccessPrincipalIds([grant.principalId])[0];
+    if (!principalId) continue;
+    const permissions = permissionsByPrincipal.get(principalId) ?? new Set();
+    for (const permission of grant.permissions) permissions.add(permission);
+    permissionsByPrincipal.set(principalId, permissions);
+  }
+  return [...permissionsByPrincipal]
+    .map(([principalId, permissions]) => ({
+      principalId,
+      permissions: [...permissions].sort(),
+    }))
+    .sort((left, right) => left.principalId.localeCompare(right.principalId));
+}
+
+function groupDocumentAclGrants(rows: ResourceAclEntity[]): DocumentAclGrant[] {
+  return normalizeDocumentAclGrants(
+    rows.map((row) => ({
+      principalId: row.principalId,
+      permissions: [row.permission as DocumentResourcePermissionKey],
+    })),
+  );
 }

@@ -43,7 +43,11 @@ export class DocumentsController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<CreateDocumentUploadResponse>> {
     const input = parseRequest(CreateDocumentUploadRequestSchema, body);
-    if (input.documentId) await this.accessControl.assertDocumentManage(auth, input.documentId);
+    if (input.documentId) {
+      await this.accessControl.assertDocumentPermission(auth, input.documentId, 'documents.update');
+    } else {
+      this.accessControl.assertPermission(auth, 'documents.create');
+    }
     return buildSuccess(
       await this.documentsService.createUpload(
         {
@@ -68,7 +72,7 @@ export class DocumentsController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<CompleteDocumentUploadResponse>> {
     parseRequest(CompleteDocumentUploadRequestSchema, body);
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.update');
     return buildSuccess(await this.documentsService.completeUpload(auth, documentId, versionId));
   }
 
@@ -80,7 +84,7 @@ export class DocumentsController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<unknown>> {
     parseRequest(TenantCommandRequestSchema, body);
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.manage');
     this.accessControl.assertDocumentReview(auth);
     return buildSuccess(await this.documentsService.publishVersion(auth, documentId, versionId));
   }
@@ -90,7 +94,7 @@ export class DocumentsController {
     @Param('documentId') documentId: string,
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<unknown>> {
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.delete');
     return buildSuccess(await this.documentsService.deleteDocument(auth, documentId));
   }
 
@@ -102,7 +106,7 @@ export class DocumentsController {
     return buildSuccess(
       await this.documentsService.findAll(
         parseRequest(DocumentQuerySchema, { ...(query as object), tenantId: auth.tenantId }),
-        auth.principalIds,
+        auth,
       ),
     );
   }
@@ -124,6 +128,6 @@ export class DocumentsController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<unknown>> {
     await this.accessControl.assertDocumentRead(auth, documentId);
-    return buildSuccess(await this.documentsService.findOne(auth.tenantId, documentId));
+    return buildSuccess(await this.documentsService.findOne(auth, documentId));
   }
 }

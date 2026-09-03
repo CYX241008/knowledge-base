@@ -37,6 +37,8 @@ import {
   titleFromFilename,
   validateDocumentFile,
 } from '@/lib/document-upload';
+import type { DocumentResourcePermissionKey } from '@knowledge-base/contracts';
+import { useAuthSession } from '@/components/auth-session-provider';
 
 const defaultTenantId = '11111111-1111-4111-8111-111111111111';
 
@@ -46,6 +48,7 @@ type DocumentRecord = {
   status: 'draft' | 'published' | 'archived';
   currentReadyVersionId: string | null;
   createdAt: string;
+  allowedPermissions: DocumentResourcePermissionKey[];
 };
 
 type DocumentVersion = {
@@ -150,6 +153,8 @@ const phaseLabels: Record<FlowPhase, string> = {
 
 export function DocumentWorkspace(): ReactElement {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/api';
+  const auth = useAuthSession();
+  const canCreateDocument = auth.hasPermission('documents.create');
   const tenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID ?? defaultTenantId;
   const inputRef = useRef<HTMLInputElement>(null);
   const answerAbortRef = useRef<AbortController | null>(null);
@@ -264,9 +269,11 @@ export function DocumentWorkspace(): ReactElement {
     () => documents.filter((document) => document.currentReadyVersionId).length,
     [documents],
   );
+  const selectedDocument = documents.find((document) => document.id === selectedDocumentId) ?? null;
   const hasActiveFlow = ['hashing', 'uploading', 'confirming', 'processing'].includes(flow.phase);
 
   function openUpload(): void {
+    if (!canCreateDocument) return;
     setFormError(null);
     setDialogOpen(true);
   }
@@ -816,9 +823,11 @@ export function DocumentWorkspace(): ReactElement {
               <h2>文档处理</h2>
               <p>最近创建的文档与当前版本</p>
             </div>
-            <Button variant="secondary" onClick={openUpload}>
-              <FileUp size={15} /> 新建
-            </Button>
+            {canCreateDocument ? (
+              <Button variant="secondary" onClick={openUpload}>
+                <FileUp size={15} /> 新建
+              </Button>
+            ) : null}
           </div>
           <div className="document-table">
             <div className="document-row document-head">
@@ -918,15 +927,19 @@ export function DocumentWorkspace(): ReactElement {
                   <RotateCcw size={15} /> 重试任务
                 </Button>
               ) : null}
-              <Button variant="secondary" onClick={openUpload}>
-                <RefreshCw size={15} /> 重新上传
-              </Button>
+              {canCreateDocument ? (
+                <Button variant="secondary" onClick={openUpload}>
+                  <RefreshCw size={15} /> 重新上传
+                </Button>
+              ) : null}
             </div>
           ) : null}
           {flow.phase === 'cancelled' ? (
-            <Button variant="secondary" className="retry-upload" onClick={openUpload}>
-              <RefreshCw size={15} /> 重新上传
-            </Button>
+            canCreateDocument ? (
+              <Button variant="secondary" className="retry-upload" onClick={openUpload}>
+                <RefreshCw size={15} /> 重新上传
+              </Button>
+            ) : null
           ) : null}
         </aside>
       </section>
@@ -942,7 +955,9 @@ export function DocumentWorkspace(): ReactElement {
             </p>
           </div>
           <div className="preview-actions">
-            {selectedVersion ? (
+            {selectedVersion &&
+            selectedDocument?.allowedPermissions.includes('documents.manage') &&
+            auth.hasPermission('documents.review') ? (
               <Button
                 variant="secondary"
                 disabled={actionBusy}
@@ -954,7 +969,11 @@ export function DocumentWorkspace(): ReactElement {
             <button
               aria-label="删除文档"
               className="icon-button danger"
-              disabled={!selectedDocumentId || actionBusy}
+              disabled={
+                !selectedDocumentId ||
+                !selectedDocument?.allowedPermissions.includes('documents.delete') ||
+                actionBusy
+              }
               onClick={() => void deleteSelectedDocument()}
               title="删除文档"
               type="button"
@@ -984,7 +1003,7 @@ export function DocumentWorkspace(): ReactElement {
         </div>
       </section>
 
-      {dialogOpen ? (
+      {dialogOpen && canCreateDocument ? (
         <div className="dialog-backdrop" role="presentation" onMouseDown={closeUpload}>
           <div
             aria-labelledby="upload-dialog-title"

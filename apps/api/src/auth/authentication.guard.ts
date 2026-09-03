@@ -7,6 +7,11 @@ import {
   type ExecutionContext,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  AccessPrincipalIdSchema,
+  TenantAccessPermissionKeySchema,
+  type TenantAccessPermissionKey,
+} from '@knowledge-base/contracts';
 import type { ServerEnv } from '@knowledge-base/config';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import type { AuthContext, AuthenticatedRequest } from './auth-context';
@@ -61,7 +66,7 @@ export class AuthenticationGuard implements CanActivate {
     return {
       tenantId,
       userId,
-      principalIds: [...new Set([`tenant:${tenantId}`, `user:${userId}`, ...configured])],
+      ...partitionClaims([`tenant:${tenantId}`, `user:${userId}`, ...configured], tenantId, userId),
       mode: 'demo',
     };
   }
@@ -83,11 +88,11 @@ export class AuthenticationGuard implements CanActivate {
       const tenantClaim = this.config.getOrThrow('AUTH_JWT_TENANT_CLAIM');
       const principalsClaim = this.config.getOrThrow('AUTH_JWT_PRINCIPALS_CLAIM');
       const tenantId = requiredUuid(payload[tenantClaim], tenantClaim);
-      const principalIds = stringArray(payload[principalsClaim], principalsClaim);
+      const claims = stringArray(payload[principalsClaim], principalsClaim);
       return {
         tenantId,
         userId,
-        principalIds: [...new Set([`user:${userId}`, ...principalIds])],
+        ...partitionClaims([`tenant:${tenantId}`, `user:${userId}`, ...claims], tenantId, userId),
         mode: 'jwt',
       };
     } catch {
@@ -120,6 +125,36 @@ function stringArray(value: unknown, claim: string): string[] {
     throw new Error(`JWT claim ${claim} must be a non-empty string array`);
   }
   return value as string[];
+}
+
+function partitionClaims(
+  values: string[],
+  tenantId: string,
+  userId: string,
+): {
+  principalIds: string[];
+  permissionKeys: TenantAccessPermissionKey[];
+} {
+  const principalIds = new Set<string>();
+  const permissionKeys = new Set<TenantAccessPermissionKey>();
+  for (const value of values) {
+    if (value.startsWith('permission:')) {
+      const parsed = TenantAccessPermissionKeySchema.safeParse(value.slice('permission:'.length));
+      if (!parsed.success) throw new Error(`Unsupported permission claim ${value}`);
+      permissionKeys.add(parsed.data);
+      continue;
+    }
+    const parsed = AccessPrincipalIdSchema.safeParse(value);
+    if (!parsed.success) throw new Error(`Invalid access principal ${value}`);
+    if (
+      (parsed.data.startsWith('tenant:') && parsed.data !== `tenant:${tenantId}`) ||
+      (parsed.data.startsWith('user:') && parsed.data !== `user:${userId}`)
+    ) {
+      throw new Error(`Principal ${value} does not match the authenticated identity`);
+    }
+    principalIds.add(parsed.data);
+  }
+  return { principalIds: [...principalIds], permissionKeys: [...permissionKeys] };
 }
 
 function unauthorized(): UnauthorizedException {

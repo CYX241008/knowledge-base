@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   AccessPermissionEntity,
@@ -36,7 +36,7 @@ import { AccessControlService } from './access-control.service';
       DocumentChunkEntity,
       OutboxEventEntity,
     ]),
-    IngestionModule,
+    forwardRef(() => IngestionModule),
   ],
   controllers: [AccessControlController],
   providers: [AccessControlService],

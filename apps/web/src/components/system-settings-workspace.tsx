@@ -38,6 +38,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
+import { useAuthSession } from '@/components/auth-session-provider';
 
 type SettingsView = 'runtime' | 'audit' | 'quality';
 
@@ -49,6 +50,7 @@ const tabs: Array<{ id: SettingsView; label: string; icon: typeof Settings2 }> =
 
 export function SystemSettingsWorkspace(): ReactElement {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/api';
+  const auth = useAuthSession();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -194,9 +196,11 @@ export function SystemSettingsWorkspace(): ReactElement {
           <span className="eyebrow">平台治理</span>
           <h1>系统设置</h1>
         </div>
-        <a className="management-link" href="/admin/access">
-          <ShieldCheck size={15} /> 组织与权限
-        </a>
+        {auth.hasPermission('access.manage') ? (
+          <a className="management-link" href="/admin/access">
+            <ShieldCheck size={15} /> 组织与权限
+          </a>
+        ) : null}
       </header>
 
       <div className="settings-toolbar">

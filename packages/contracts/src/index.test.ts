@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DocumentAclProjectionJobSchema,
+  CreateAccessRoleRequestSchema,
   DocumentIngestionJobSchema,
   DocumentSearchProjectionJobSchema,
   DocumentReviewQuerySchema,
@@ -63,6 +64,21 @@ describe('reliable queue contracts', () => {
     expect(RejectDocumentReviewRequestSchema.safeParse({ comment: ' ' }).success).toBe(false);
   });
 
+  it('keeps resource permissions out of tenant roles', () => {
+    expect(
+      CreateAccessRoleRequestSchema.safeParse({
+        name: 'Knowledge manager',
+        permissionKeys: ['knowledge.manage'],
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateAccessRoleRequestSchema.safeParse({
+        name: 'Invalid reader',
+        permissionKeys: ['documents.read'],
+      }).success,
+    ).toBe(false);
+  });
+
   it('validates ACL projection versions and typed principals', () => {
     const payload = {
       tenantId: '11111111-1111-4111-8111-111111111111',
@@ -79,9 +95,23 @@ describe('reliable queue contracts', () => {
         principalIds: ['role:33333333-3333-4333-8333-333333333333'],
       }).success,
     ).toBe(true);
+    expect(ReplaceDocumentAclRequestSchema.safeParse({ principalIds: [] }).success).toBe(true);
+    expect(
+      ReplaceDocumentAclRequestSchema.safeParse({
+        grants: [
+          {
+            principalId: 'role:33333333-3333-4333-8333-333333333333',
+            permissions: ['documents.read', 'documents.update'],
+          },
+        ],
+      }).success,
+    ).toBe(true);
     expect(
       ReplaceDocumentAclRequestSchema.safeParse({ principalIds: ['permission:access.manage'] })
         .success,
+    ).toBe(false);
+    expect(
+      ReplaceDocumentAclRequestSchema.safeParse({ principalIds: [], grants: [] }).success,
     ).toBe(false);
   });
 

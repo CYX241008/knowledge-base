@@ -31,7 +31,7 @@ pnpm dev
 
 外部模型适配器提供每分钟请求上限、并发队列、指数退避、熔断、超时和取消传播。`GET /api/metrics/models` 汇总调用状态、重试次数、总延迟、首 token 延迟、token 用量和估算成本。当前向量列固定为 384 维；健康检查会同时验证 PostgreSQL 列类型和模型探针，生产环境强制设置 `MODEL_VALIDATE_ON_STARTUP=true`。
 
-API 身份只从服务端鉴权上下文取得，客户端提交的 `tenantId`、`createdBy` 和检索 `principalIds` 不参与授权。开发默认 `AUTH_MODE=demo`，固定身份来自 `AUTH_DEMO_*`；生产环境强制 `AUTH_MODE=jwt`，并通过 `AUTH_JWT_JWKS_URL`、issuer、audience 和声明名校验 Bearer JWT。共享文档所需的租户或角色主体必须出现在身份提供方签发的有效主体声明中。
+API 身份只从服务端鉴权上下文取得，客户端提交的 `tenantId`、`createdBy` 和检索 `principalIds` 不参与授权。开发默认 `AUTH_MODE=demo`，固定身份来自 `AUTH_DEMO_*`；生产环境强制 `AUTH_MODE=jwt`，并通过 `AUTH_JWT_JWKS_URL`、issuer、audience 和声明名校验 Bearer JWT。租户级能力保存在 `permissionKeys`，资源 ACL 主体保存在 `principalIds`，停用的租户或用户会被拒绝。新文档默认仅创建者可读，文档直接 ACL 与空间/文件夹继承 ACL 分开维护。完整设计见 `docs/access-control-design.md`。
 
 知识问答工具栏可以新建、读取和删除当前用户的会话；会话消息与引用保存在 PostgreSQL。`CHAT_RETENTION_DAYS` 控制保留天数，后台清理默认每 6 小时执行一次。流式回答可由停止按钮或客户端断连取消，取消信号会继续传递到检索、重排和外部 Chat 请求。
 

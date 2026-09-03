@@ -9,6 +9,7 @@ import {
   buildSuccess,
   type ApiResponse,
   type AccessOverviewResponse,
+  type AccessPrincipalDirectoryResponse,
   type ReplaceDocumentAclResponse,
 } from '@knowledge-base/contracts';
 import type { AuthContext } from '../auth/auth-context';
@@ -25,6 +26,13 @@ export class AccessControlController {
   @Get('overview')
   async overview(@CurrentAuth() auth: AuthContext): Promise<ApiResponse<AccessOverviewResponse>> {
     return buildSuccess(await this.access.overview(auth));
+  }
+
+  @Get('principals')
+  async principals(
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<AccessPrincipalDirectoryResponse>> {
+    return buildSuccess(await this.access.principalDirectory(auth));
   }
 
   @Post('members')
@@ -93,6 +101,12 @@ export class AccessControlController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<ReplaceDocumentAclResponse>> {
     const input = parseRequest(ReplaceDocumentAclRequestSchema, body);
-    return buildSuccess(await this.access.replaceDocumentAcl(auth, documentId, input.principalIds));
+    const grants =
+      input.grants ??
+      (input.principalIds ?? []).map((principalId) => ({
+        principalId,
+        permissions: ['documents.read' as const],
+      }));
+    return buildSuccess(await this.access.replaceDocumentAcl(auth, documentId, grants));
   }
 }

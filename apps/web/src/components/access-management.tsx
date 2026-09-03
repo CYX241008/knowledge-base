@@ -2,11 +2,14 @@
 
 import type {
   AccessOverviewResponse,
-  AccessPermissionKey,
   AccessRole,
+  DocumentAclGrant,
+  DocumentResourcePermissionKey,
   OrganizationDepartment,
   OrganizationMember,
+  TenantAccessPermissionKey,
 } from '@knowledge-base/contracts';
+import { documentResourcePermissionKeys } from '@knowledge-base/contracts';
 import { Button } from '@knowledge-base/ui/button';
 import {
   Building2,
@@ -21,6 +24,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useAuthSession } from '@/components/auth-session-provider';
 
 type AccessTab = 'members' | 'roles' | 'departments' | 'documents';
 
@@ -33,6 +37,8 @@ const tabs: Array<{ id: AccessTab; label: string; icon: typeof Users }> = [
 
 export function AccessManagement(): ReactElement {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/api';
+  const auth = useAuthSession();
+  const allowed = auth.hasPermission('access.manage');
   const [overview, setOverview] = useState<AccessOverviewResponse | null>(null);
   const [activeTab, setActiveTab] = useState<AccessTab>('members');
   const [loading, setLoading] = useState(true);
@@ -41,6 +47,10 @@ export function AccessManagement(): ReactElement {
   const [notice, setNotice] = useState<string | null>(null);
 
   const loadOverview = useCallback(async () => {
+    if (auth.loading || !allowed) {
+      setLoading(auth.loading);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -50,7 +60,7 @@ export function AccessManagement(): ReactElement {
     } finally {
       setLoading(false);
     }
-  }, [apiBase]);
+  }, [allowed, apiBase, auth.loading]);
 
   useEffect(() => {
     void loadOverview();
@@ -73,6 +83,14 @@ export function AccessManagement(): ReactElement {
     },
     [loadOverview],
   );
+
+  if (!auth.loading && !allowed) {
+    return (
+      <div className="access-failure" role="alert">
+        当前账号没有访问控制管理权限
+      </div>
+    );
+  }
 
   if (loading && !overview) {
     return (
@@ -331,7 +349,7 @@ function RolesView({
 }): ReactElement {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [permissionKeys, setPermissionKeys] = useState<AccessPermissionKey[]>([]);
+  const [permissionKeys, setPermissionKeys] = useState<TenantAccessPermissionKey[]>([]);
 
   async function createRole(): Promise<void> {
     await mutate(
@@ -374,17 +392,22 @@ function RolesView({
         </Field>
       </div>
       <div className="permission-grid">
-        {overview.permissions.map((permission) => (
-          <CheckboxRow
-            checked={permissionKeys.includes(permission.key)}
-            description={permission.description}
-            key={permission.key}
-            label={permission.name}
-            onChange={(checked) =>
-              setPermissionKeys(toggleValue(permissionKeys, permission.key, checked))
-            }
-          />
-        ))}
+        {overview.permissions
+          .filter((permission) => permission.scope === 'tenant')
+          .map((permission) => {
+            const permissionKey = permission.key as TenantAccessPermissionKey;
+            return (
+              <CheckboxRow
+                checked={permissionKeys.includes(permissionKey)}
+                description={permission.description}
+                key={permissionKey}
+                label={permission.name}
+                onChange={(checked) =>
+                  setPermissionKeys(toggleValue(permissionKeys, permissionKey, checked))
+                }
+              />
+            );
+          })}
       </div>
       <div className="access-actions">
         <Button disabled={busy || !name.trim()} onClick={() => void createRole()}>
@@ -557,11 +580,8 @@ function DocumentsAclView({
   const [documentId, setDocumentId] = useState(overview.documents[0]?.id ?? '');
   const document =
     overview.documents.find((item) => item.id === documentId) ?? overview.documents[0];
-  const [principalIds, setPrincipalIds] = useState<string[]>(document?.principalIds ?? []);
-  useEffect(
-    () => setPrincipalIds(document?.principalIds ?? []),
-    [document?.id, document?.principalIds],
-  );
+  const [grants, setGrants] = useState<DocumentAclGrant[]>(document?.directGrants ?? []);
+  useEffect(() => setGrants(document?.directGrants ?? []), [document?.directGrants, document?.id]);
   const principals = useMemo(
     () => [
       { id: `tenant:${overview.tenant.id}`, label: overview.tenant.name, description: '整个租户' },
@@ -583,6 +603,16 @@ function DocumentsAclView({
     ],
     [overview],
   );
+  const directReadPrincipalIds = new Set(
+    grants
+      .filter((grant) => grant.permissions.includes('documents.read'))
+      .map((grant) => grant.principalId),
+  );
+  const inheritedPrincipalIds = document
+    ? document.effectivePrincipalIds.filter(
+        (principalId) => !directReadPrincipalIds.has(principalId),
+      )
+    : [];
 
   if (!document)
     return (
@@ -615,28 +645,55 @@ function DocumentsAclView({
         ))}
       </select>
       <div className="permission-grid acl-grid">
-        {principals.map((principal) => (
-          <CheckboxRow
-            checked={principalIds.includes(principal.id)}
-            description={principal.description}
-            key={principal.id}
-            label={principal.label}
-            onChange={(checked) =>
-              setPrincipalIds(toggleValue(principalIds, principal.id, checked))
-            }
-          />
-        ))}
+        {principals.map((principal) => {
+          const grant = grants.find((item) => item.principalId === principal.id);
+          return (
+            <div className="access-check" key={principal.id}>
+              <span>
+                <strong>{principal.label}</strong>
+                <small>{principal.description}</small>
+              </span>
+              <div className="acl-permission-options">
+                {documentResourcePermissionKeys.map((permission) => (
+                  <label key={permission}>
+                    <input
+                      checked={grant?.permissions.includes(permission) ?? false}
+                      onChange={(event) =>
+                        setGrants(
+                          toggleDocumentGrant(
+                            grants,
+                            principal.id,
+                            permission,
+                            event.target.checked,
+                          ),
+                        )
+                      }
+                      type="checkbox"
+                    />
+                    <span>{documentPermissionLabel(permission)}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
+      {inheritedPrincipalIds.length > 0 ? (
+        <p className="inherit-note">
+          另有 {inheritedPrincipalIds.length}{' '}
+          个主体通过空间或文件夹继承读取权限；此处保存不会将其转成文档直接授权。
+        </p>
+      ) : null}
       <div className="access-actions">
         <Button
-          disabled={busy || principalIds.length === 0}
+          disabled={busy}
           onClick={() =>
             void mutate(
               () =>
                 requestApi(`${apiBase}/access/documents/${document.id}/acl`, {
                   method: 'PUT',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ principalIds }),
+                  body: JSON.stringify({ grants }),
                 }),
               '文档 ACL 已提交投影',
             )
@@ -689,6 +746,28 @@ function CheckboxRow({
 
 function toggleValue<T extends string>(values: T[], value: T, included: boolean): T[] {
   return included ? [...new Set([...values, value])] : values.filter((item) => item !== value);
+}
+
+function toggleDocumentGrant(
+  grants: DocumentAclGrant[],
+  principalId: string,
+  permission: DocumentResourcePermissionKey,
+  included: boolean,
+): DocumentAclGrant[] {
+  const current = grants.find((grant) => grant.principalId === principalId);
+  const permissions = toggleValue(current?.permissions ?? [], permission, included);
+  const remaining = grants.filter((grant) => grant.principalId !== principalId);
+  return permissions.length > 0 ? [...remaining, { principalId, permissions }] : remaining;
+}
+
+function documentPermissionLabel(permission: DocumentResourcePermissionKey): string {
+  return {
+    'documents.read': '读取',
+    'documents.update': '更新',
+    'documents.delete': '删除',
+    'documents.manage': '管理',
+    'documents.share': '共享',
+  }[permission];
 }
 
 async function requestApi<T = unknown>(url: string, init?: RequestInit): Promise<T> {

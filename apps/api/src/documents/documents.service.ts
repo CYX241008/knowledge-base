@@ -10,6 +10,7 @@ import type {
   CreateDocumentUploadResponse,
   DeleteDocumentResponse,
   DocumentQuery,
+  DocumentResourcePermissionKey,
   PublishDocumentVersionResponse,
 } from '@knowledge-base/contracts';
 import {
@@ -376,7 +377,7 @@ export class DocumentsService {
 
   async findAll(
     query: DocumentQuery,
-    principalIds: string[],
+    auth: AuthContext,
   ): Promise<{ items: unknown[]; total: number; page: number; pageSize: number }> {
     const qb = this.documentRepository
       .createQueryBuilder('document')
@@ -389,7 +390,7 @@ export class DocumentsService {
             AND effective.document_id = document.id
             AND effective.principal_id = ANY(CAST(:principalIds AS varchar[]))
         )`,
-        { principalIds },
+        { principalIds: auth.principalIds },
       );
     if (query.title) qb.andWhere('document.title ILIKE :title', { title: `%${query.title}%` });
     if (query.spaceId) qb.andWhere('document.spaceId = :spaceId', { spaceId: query.spaceId });
@@ -411,22 +412,41 @@ export class DocumentsService {
       .skip((query.page - 1) * query.pageSize)
       .take(query.pageSize);
     const [items, total] = await qb.getManyAndCount();
-    return { items, total, page: query.page, pageSize: query.pageSize };
+    return {
+      items: await Promise.all(
+        items.map(async (document) => ({
+          ...document,
+          allowedPermissions: await this.accessControl.documentPermissions(auth, document),
+        })),
+      ),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
   }
 
   async findOne(
-    tenantId: string,
+    auth: AuthContext,
     documentId: string,
-  ): Promise<{ document: DocumentEntity; versions: DocumentVersionEntity[] }> {
+  ): Promise<{
+    document: DocumentEntity & { allowedPermissions: DocumentResourcePermissionKey[] };
+    versions: DocumentVersionEntity[];
+  }> {
     const document = await this.documentRepository.findOne({
-      where: { id: documentId, tenantId, deletedAt: IsNull() },
+      where: { id: documentId, tenantId: auth.tenantId, deletedAt: IsNull() },
     });
     if (!document) throw new NotFoundException(`Document ${documentId} not found`);
     const versions = await this.versionRepository.find({
-      where: { documentId, tenantId },
+      where: { documentId, tenantId: auth.tenantId },
       order: { versionNo: 'DESC' },
     });
-    return { document, versions };
+    return {
+      document: {
+        ...document,
+        allowedPermissions: await this.accessControl.documentPermissions(auth, document),
+      },
+      versions,
+    };
   }
 
   async getMarkdown(tenantId: string, documentId: string, versionId: string): Promise<string> {

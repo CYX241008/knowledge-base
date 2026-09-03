@@ -42,6 +42,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
+import { useAuthSession } from '@/components/auth-session-provider';
 
 type View = 'results' | 'governance';
 type FilterState = { spaceId: string; folderId: string; tagIds: string[] };
@@ -50,11 +51,14 @@ const emptyFilters: FilterState = { spaceId: '', folderId: '', tagIds: [] };
 
 export function SearchWorkspace(): ReactElement {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/api';
+  const auth = useAuthSession();
+  const canViewGovernance = auth.hasPermission('knowledge.manage');
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const urlState = searchParams.toString();
-  const view: View = searchParams.get('view') === 'governance' ? 'governance' : 'results';
+  const view: View =
+    searchParams.get('view') === 'governance' && canViewGovernance ? 'governance' : 'results';
   const query = searchParams.get('q')?.trim() ?? '';
   const page = positiveInteger(searchParams.get('page'), 1);
   const days = clamp(positiveInteger(searchParams.get('days'), 7), 1, 90);
@@ -269,7 +273,7 @@ export function SearchWorkspace(): ReactElement {
           >
             <FileSearch size={15} /> 搜索结果
           </button>
-          {governanceAllowed ? (
+          {canViewGovernance && governanceAllowed ? (
             <button
               aria-selected={view === 'governance'}
               className={view === 'governance' ? 'active' : ''}

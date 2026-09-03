@@ -6,6 +6,7 @@ import {
 } from '@knowledge-base/contracts';
 import { parseRequest } from '../common/validation';
 import type { AuthContext } from '../auth/auth-context';
+import { AccessControlService } from '../access-control/access-control.service';
 import { AuthenticationGuard } from '../auth/authentication.guard';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { IngestionService } from './ingestion.service';
@@ -13,14 +14,19 @@ import { IngestionService } from './ingestion.service';
 @Controller('ingestion/jobs')
 @UseGuards(AuthenticationGuard)
 export class IngestionController {
-  constructor(@Inject(IngestionService) private readonly ingestionService: IngestionService) {}
+  constructor(
+    @Inject(IngestionService) private readonly ingestionService: IngestionService,
+    @Inject(AccessControlService) private readonly accessControl: AccessControlService,
+  ) {}
 
   @Get(':jobId')
   async findOne(
     @Param('jobId') jobId: string,
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<unknown>> {
-    return buildSuccess(await this.ingestionService.findOne(auth.tenantId, jobId));
+    const job = await this.ingestionService.findOne(auth.tenantId, jobId);
+    await this.accessControl.assertDocumentPermission(auth, job.documentId, 'documents.manage');
+    return buildSuccess(job);
   }
 
   @Post(':jobId/retry')
@@ -30,6 +36,8 @@ export class IngestionController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<unknown>> {
     parseRequest(TenantCommandRequestSchema, body);
+    const job = await this.ingestionService.findOne(auth.tenantId, jobId);
+    await this.accessControl.assertDocumentPermission(auth, job.documentId, 'documents.manage');
     return buildSuccess(await this.ingestionService.retry(auth.tenantId, jobId));
   }
 
@@ -40,6 +48,8 @@ export class IngestionController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<unknown>> {
     parseRequest(TenantCommandRequestSchema, body);
+    const job = await this.ingestionService.findOne(auth.tenantId, jobId);
+    await this.accessControl.assertDocumentPermission(auth, job.documentId, 'documents.manage');
     return buildSuccess(await this.ingestionService.cancel(auth.tenantId, jobId));
   }
 }

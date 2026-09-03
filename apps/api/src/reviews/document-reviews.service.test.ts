@@ -12,7 +12,8 @@ import { DocumentReviewsService } from './document-reviews.service';
 const auth: AuthContext = {
   tenantId: '11111111-1111-4111-8111-111111111111',
   userId: '22222222-2222-4222-8222-222222222222',
-  principalIds: ['permission:documents.review'],
+  principalIds: [`user:22222222-2222-4222-8222-222222222222`],
+  permissionKeys: ['documents.review'],
   mode: 'demo',
 };
 const oldVersionId = '33333333-3333-4333-8333-333333333333';
@@ -43,7 +44,7 @@ describe('DocumentReviewsService', () => {
     const service = new DocumentReviewsService(
       { transaction: vi.fn(async (callback) => callback(manager)) } as never,
       {
-        assertDocumentManage: vi.fn(async () => document),
+        assertDocumentPermission: vi.fn(async () => document),
         recordAudit: vi.fn(async () => undefined),
       } as never,
       ingestion as never,

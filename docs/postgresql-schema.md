@@ -1,6 +1,6 @@
 # PostgreSQL 表结构与关系
 
-更新时间：2026-09-01
+更新时间：2026-09-03
 
 ## 1. 当前基线
 
@@ -10,7 +10,7 @@
 - 已启用扩展：`vector 0.8.5`、`pgcrypto 1.3`、`plpgsql 1.0`
 - 业务表：31 张
 - 元数据表：1 张 TypeORM `migrations`
-- 已执行迁移：10/10，最新为 `DocumentReview1754524800000`
+- 已执行迁移：11/11，最新为 `PermissionHardening1754611200000`
 - 向量字段：`document_chunk.embedding vector(384)`
 - Schema 管理：`synchronize: false`，以迁移文件为准
 
@@ -194,7 +194,9 @@ erDiagram
 
 - 用途：全局权限字典。
 - 主键：`key varchar(128)`
-- 字段：`key`、`name varchar(255)`、`description text`
+- 字段：`key`、`name varchar(255)`、`description text`、
+  `scope varchar(16)`
+- 约束：`scope IN ('tenant', 'resource')`
 - 当前权限包括访问控制、文档 CRUD/管理/分享/审核和知识组织管理。
 
 #### `user_role`
@@ -212,6 +214,7 @@ erDiagram
 - 主键：`(role_id, permission_key)`
 - 外键：`role_id -> access_role.id`、
   `permission_key -> access_permission.key`，均为 `ON DELETE CASCADE`
+- 约束：只能绑定 `scope = 'tenant'` 的权限。
 
 #### `resource_acl`
 
@@ -227,6 +230,8 @@ erDiagram
 - 枚举约束：
   - `resource_type`: `document | space | folder`
   - `principal_type`: `tenant | user | department | role`
+- 约束：只能绑定 `scope = 'resource'` 的权限；`principal_id` 前缀必须与
+  `principal_type` 一致。
 
 #### `document_effective_principal`
 
@@ -588,10 +593,7 @@ ready | retrying | failed | cancelled`
 
 还需注意以下跨租户一致性主要由应用层保证：
 
-- `department_member.tenant_id` 未与部门、用户建立复合外键。
-- `user_role.tenant_id` 未与用户、角色建立复合外键。
 - `document_tag.tenant_id` 未与文档、标签建立复合外键。
-- `knowledge_folder.parent_id` 仅引用文件夹 ID，数据库未限制父子必须属于同一租户和空间。
 - 审核请求的文档、版本、提交人和处理人未通过复合外键强制属于同一租户。
 - `document.current_ready_version_id` 未强制指向该文档自身的版本。
 
@@ -613,3 +615,4 @@ ready | retrying | failed | cancelled`
 | 8    | `SearchGovernance1754352000000`      | 查询事件                           |
 | 9    | `SystemGovernance1754438400000`      | 租户设置、搜索反馈                 |
 | 10   | `DocumentReview1754524800000`        | 文档审核请求和动作                 |
+| 11   | `PermissionHardening1754611200000`   | 权限作用域、主体格式和跨租户约束   |

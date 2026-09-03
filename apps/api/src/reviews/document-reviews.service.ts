@@ -38,7 +38,7 @@ export class DocumentReviewsService {
     versionId: string,
     comment: string | null,
   ): Promise<DocumentReviewItem> {
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.manage');
     let reviewId: string;
     try {
       reviewId = await this.dataSource.transaction(async (manager) => {
@@ -124,7 +124,7 @@ export class DocumentReviewsService {
     versionId: string,
     comment: string | null,
   ): Promise<DocumentReviewItem> {
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.manage');
     const reviewId = await this.dataSource.transaction(async (manager) => {
       const review = await manager.getRepository(DocumentReviewRequestEntity).findOne({
         where: {
@@ -244,7 +244,7 @@ export class DocumentReviewsService {
     documentId: string,
     query: DocumentReviewQuery,
   ): Promise<DocumentReviewListResponse> {
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.manage');
     return this.list(auth.tenantId, query, documentId);
   }
 

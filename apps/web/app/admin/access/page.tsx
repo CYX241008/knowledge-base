@@ -6,7 +6,7 @@ import { AppSidebar } from '@/components/app-sidebar';
 export default function AccessAdministrationPage(): ReactElement {
   return (
     <main className="shell">
-      <AppSidebar active="settings" />
+      <AppSidebar active="access" />
       <section className="content access-content">
         <header className="topbar">
           <div>

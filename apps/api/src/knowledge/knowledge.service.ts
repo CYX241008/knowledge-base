@@ -9,7 +9,9 @@ import type {
   UpdateKnowledgeFolderRequest,
   UpdateKnowledgeSpaceRequest,
   UpdateKnowledgeTagRequest,
+  DocumentResourcePermissionKey,
 } from '@knowledge-base/contracts';
+import { documentResourcePermissionKeys } from '@knowledge-base/contracts';
 import {
   DocumentEntity,
   DocumentTagEntity,
@@ -56,14 +58,14 @@ export class KnowledgeService {
       this.dataSource.getRepository(ResourceAclEntity).find({
         where: {
           tenantId: auth.tenantId,
-          resourceType: In(['space', 'folder']),
-          permission: 'documents.read',
+          resourceType: In(['space', 'folder', 'document']),
         },
       }),
     ]);
     const administrator = this.canManageKnowledge(auth);
     const directAcl = new Map<string, string[]>();
     for (const row of aclRows) {
+      if (row.permission !== 'documents.read') continue;
       const key = `${row.resourceType}:${row.resourceId}`;
       directAcl.set(key, [...(directAcl.get(key) ?? []), row.principalId]);
     }
@@ -135,6 +137,7 @@ export class KnowledgeService {
           .map((item) => item.tagId),
         aclVersion: document.aclVersion,
         searchProjectionVersion: document.searchProjectionVersion,
+        allowedPermissions: this.documentPermissions(auth, document, aclRows),
       })),
     };
   }
@@ -484,7 +487,7 @@ export class KnowledgeService {
   }
 
   async moveDocument(auth: AuthContext, documentId: string, input: MoveDocumentRequest) {
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.update');
     await this.validateLocation(auth.tenantId, input.spaceId, input.folderId);
     const response = await this.dataSource.transaction(async (manager) => {
       const document = await manager.getRepository(DocumentEntity).findOne({
@@ -521,7 +524,7 @@ export class KnowledgeService {
   }
 
   async replaceDocumentTags(auth: AuthContext, documentId: string, tagIds: string[]) {
-    await this.accessControl.assertDocumentManage(auth, documentId);
+    await this.accessControl.assertDocumentPermission(auth, documentId, 'documents.update');
     const uniqueTagIds = [...new Set(tagIds)];
     if (uniqueTagIds.length > 0) {
       const count = await this.dataSource.getRepository(KnowledgeTagEntity).countBy({
@@ -668,10 +671,42 @@ export class KnowledgeService {
   }
 
   private canManageKnowledge(auth: AuthContext): boolean {
-    return (
-      auth.principalIds.includes('permission:knowledge.manage') ||
-      auth.principalIds.includes('permission:access.manage')
-    );
+    return this.accessControl.hasPermission(auth, 'knowledge.manage');
+  }
+
+  private documentPermissions(
+    auth: AuthContext,
+    document: DocumentEntity,
+    aclRows: ResourceAclEntity[],
+  ): DocumentResourcePermissionKey[] {
+    const permissions = new Set<DocumentResourcePermissionKey>();
+    if (principalsOverlap(document.accessPrincipalIds, auth.principalIds)) {
+      permissions.add('documents.read');
+    }
+    if (
+      this.accessControl.hasPermission(auth, 'access.manage') ||
+      document.createdBy === auth.userId
+    ) {
+      for (const permission of documentResourcePermissionKeys) {
+        if (permission !== 'documents.read') permissions.add(permission);
+      }
+    }
+    for (const row of aclRows) {
+      if (
+        row.resourceType === 'document' &&
+        row.resourceId === document.id &&
+        auth.principalIds.includes(row.principalId) &&
+        documentResourcePermissionKeys.includes(row.permission as DocumentResourcePermissionKey)
+      ) {
+        permissions.add(row.permission as DocumentResourcePermissionKey);
+      }
+    }
+    if (permissions.has('documents.manage')) {
+      for (const permission of documentResourcePermissionKeys) {
+        if (permission !== 'documents.read') permissions.add(permission);
+      }
+    }
+    return [...permissions];
   }
 
   private invalidLocation(): ConflictException {

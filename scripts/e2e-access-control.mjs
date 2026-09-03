@@ -6,7 +6,11 @@ const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/a
 const elasticsearchUrl = process.env.ELASTICSEARCH_URL ?? 'http://localhost:9200';
 const elasticsearchIndex = process.env.ELASTICSEARCH_INDEX ?? 'knowledge-document-chunks-v1';
 const sourcePath = resolve('packages/rag/test-fixtures/search-sample.md');
-const bytes = await readFile(sourcePath);
+const searchMarker = `aclmarker${Date.now()}`;
+const bytes = Buffer.concat([
+  await readFile(sourcePath),
+  Buffer.from(`\n\n## Access marker\n\n${searchMarker}\n`),
+]);
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 const roleName = `ACL E2E ${Date.now()}`;
 let roleId;
@@ -24,7 +28,7 @@ try {
     body: JSON.stringify({
       name: roleName,
       description: '运行态访问控制验收角色',
-      permissionKeys: ['documents.read'],
+      permissionKeys: [],
     }),
   }));
   await assignRoles(session.userId, [...systemRoleIds, roleId]);
@@ -68,6 +72,7 @@ try {
     { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
   );
 
+  await waitForElasticPrincipals(documentId, [rolePrincipal]);
   await expectSearchVisibility(documentId, true);
   await assignRoles(session.userId, systemRoleIds);
   await expectSearchVisibility(documentId, false);
@@ -133,7 +138,12 @@ async function replaceAcl(targetDocumentId, principalIds) {
   return request(`${apiBase}/access/documents/${targetDocumentId}/acl`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ principalIds }),
+    body: JSON.stringify({
+      grants: principalIds.map((principalId) => ({
+        principalId,
+        permissions: ['documents.read'],
+      })),
+    }),
   });
 }
 
@@ -141,11 +151,19 @@ async function expectSearchVisibility(targetDocumentId, expected) {
   const result = await request(`${apiBase}/search`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: '量子凤梨索引', limit: 10 }),
+    body: JSON.stringify({ text: searchMarker, limit: 10 }),
   });
   const visible = result.hits.some((hit) => hit.documentId === targetDocumentId);
   if (visible !== expected) {
-    throw new Error(`Expected search visibility ${expected}, received ${visible}`);
+    throw new Error(
+      `Expected search visibility ${expected}, received ${visible}; hits=${JSON.stringify(
+        result.hits.map((hit) => ({
+          documentId: hit.documentId,
+          title: hit.title,
+          score: hit.score,
+        })),
+      )}`,
+    );
   }
 }
 

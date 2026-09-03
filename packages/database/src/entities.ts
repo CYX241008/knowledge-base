@@ -1,5 +1,6 @@
 import type {
   AccessPermissionKey,
+  AccessPermissionScope,
   AccessPrincipalType,
   DocumentStatus,
   DocumentReviewAction,
@@ -133,6 +134,9 @@ export class AccessPermissionEntity {
 
   @Column('text')
   description!: string;
+
+  @Column('varchar', { length: 16, default: 'resource' })
+  scope!: AccessPermissionScope;
 }
 
 @Entity('user_role')

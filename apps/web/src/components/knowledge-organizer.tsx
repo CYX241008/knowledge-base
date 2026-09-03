@@ -1,7 +1,7 @@
 'use client';
 
 import type {
-  AccessOverviewResponse,
+  AccessPrincipalDirectoryResponse,
   KnowledgeFolder,
   KnowledgeOverviewResponse,
   KnowledgeSpace,
@@ -30,6 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useAuthSession } from '@/components/auth-session-provider';
 
 type View = 'library' | 'tags';
 type ContainerSelection = { type: 'space' | 'folder'; id: string };
@@ -37,8 +38,10 @@ type PrincipalChoice = { id: string; label: string; type: string };
 
 export function KnowledgeOrganizer(): ReactElement {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/api';
+  const auth = useAuthSession();
+  const canManageKnowledge = auth.hasPermission('knowledge.manage');
   const [overview, setOverview] = useState<KnowledgeOverviewResponse | null>(null);
-  const [access, setAccess] = useState<AccessOverviewResponse | null>(null);
+  const [directory, setDirectory] = useState<AccessPrincipalDirectoryResponse | null>(null);
   const [view, setView] = useState<View>('library');
   const [selection, setSelection] = useState<ContainerSelection | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
@@ -49,15 +52,18 @@ export function KnowledgeOrganizer(): ReactElement {
   const [creatingSpace, setCreatingSpace] = useState(false);
 
   const load = useCallback(async () => {
+    if (auth.loading) return;
     setLoading(true);
     setError(null);
     try {
-      const [knowledgeData, accessData] = await Promise.all([
+      const [knowledgeData, principalDirectory] = await Promise.all([
         requestApi<KnowledgeOverviewResponse>(`${apiBase}/knowledge/overview`),
-        requestApi<AccessOverviewResponse>(`${apiBase}/access/overview`),
+        canManageKnowledge
+          ? requestApi<AccessPrincipalDirectoryResponse>(`${apiBase}/access/principals`)
+          : Promise.resolve(null),
       ]);
       setOverview(knowledgeData);
-      setAccess(accessData);
+      setDirectory(principalDirectory);
       setSelection((current) => {
         if (
           current?.type === 'space' &&
@@ -82,7 +88,7 @@ export function KnowledgeOrganizer(): ReactElement {
     } finally {
       setLoading(false);
     }
-  }, [apiBase]);
+  }, [apiBase, auth.loading, canManageKnowledge]);
 
   useEffect(() => {
     void load();
@@ -106,7 +112,7 @@ export function KnowledgeOrganizer(): ReactElement {
     [load],
   );
 
-  const principalChoices = useMemo(() => buildPrincipalChoices(access), [access]);
+  const principalChoices = useMemo(() => buildPrincipalChoices(directory), [directory]);
   const selectedSpace =
     selection?.type === 'space'
       ? (overview?.spaces.find((space) => space.id === selection.id) ?? null)
@@ -127,7 +133,7 @@ export function KnowledgeOrganizer(): ReactElement {
     [overview?.documents, selection],
   );
 
-  if (loading && !overview) {
+  if ((loading || auth.loading) && !overview) {
     return (
       <div className="knowledge-loading" role="status">
         <LoaderCircle className="spinning" size={20} /> 正在载入知识组织数据
@@ -135,7 +141,7 @@ export function KnowledgeOrganizer(): ReactElement {
     );
   }
 
-  if (!overview || !access) {
+  if (!overview || (canManageKnowledge && !directory)) {
     return (
       <div className="knowledge-loading failure" role="alert">
         <span>{error ?? '知识组织数据载入失败'}</span>
@@ -164,9 +170,11 @@ export function KnowledgeOrganizer(): ReactElement {
           >
             <RefreshCw className={loading ? 'spinning' : ''} size={16} />
           </button>
-          <Button disabled={busy} onClick={() => setCreatingSpace(true)}>
-            <Plus size={15} /> 新建空间
-          </Button>
+          {canManageKnowledge ? (
+            <Button disabled={busy} onClick={() => setCreatingSpace(true)}>
+              <Plus size={15} /> 新建空间
+            </Button>
+          ) : null}
         </div>
       </header>
 
@@ -188,8 +196,10 @@ export function KnowledgeOrganizer(): ReactElement {
         </div>
         <div>
           <span>当前租户</span>
-          <strong className="metric-name">{access.tenant.name}</strong>
-          <small>{access.members.length} 位成员</small>
+          <strong className="metric-name">{directory?.tenant.name ?? '当前租户'}</strong>
+          <small>
+            {canManageKnowledge ? `${directory?.principals.length ?? 0} 个授权主体` : '只读视图'}
+          </small>
         </div>
       </div>
 
@@ -223,6 +233,7 @@ export function KnowledgeOrganizer(): ReactElement {
         <div className="knowledge-workspace">
           <LibraryTree
             busy={busy}
+            canCreate={canManageKnowledge}
             folders={overview.folders}
             onCreateFolder={(name, parentId) => {
               if (!selectedSpace) return Promise.resolve();
@@ -250,7 +261,7 @@ export function KnowledgeOrganizer(): ReactElement {
             selectedDocumentId={selectedDocumentId}
             selectedSpace={selectedSpace}
           />
-          {selectedDocument ? (
+          {selectedDocument && selectedDocument.allowedPermissions.includes('documents.update') ? (
             <DocumentEditor
               busy={busy}
               document={selectedDocument}
@@ -276,7 +287,9 @@ export function KnowledgeOrganizer(): ReactElement {
               spaces={overview.spaces}
               tags={overview.tags}
             />
-          ) : selectedSpace ? (
+          ) : selectedDocument ? (
+            <ReadOnlyInspector title={selectedDocument.title} />
+          ) : selectedSpace && canManageKnowledge ? (
             <ContainerEditor
               busy={busy}
               folder={selectedFolder}
@@ -317,6 +330,8 @@ export function KnowledgeOrganizer(): ReactElement {
               principalChoices={principalChoices}
               space={selectedSpace}
             />
+          ) : selectedSpace ? (
+            <ReadOnlyInspector title={selectedFolder?.name ?? selectedSpace.name} />
           ) : (
             <EmptyInspector />
           )}
@@ -324,6 +339,7 @@ export function KnowledgeOrganizer(): ReactElement {
       ) : (
         <TagManager
           busy={busy}
+          readOnly={!canManageKnowledge}
           onCreate={(name, color, description) =>
             mutate(
               () =>
@@ -357,10 +373,10 @@ export function KnowledgeOrganizer(): ReactElement {
         />
       )}
 
-      {creatingSpace ? (
+      {creatingSpace && canManageKnowledge && directory ? (
         <SpaceDialog
           busy={busy}
-          defaultPrincipalId={`tenant:${access.tenant.id}`}
+          defaultPrincipalId={`tenant:${directory.tenant.id}`}
           onClose={() => setCreatingSpace(false)}
           onCreate={(name, description, principalIds) =>
             mutate(
@@ -382,6 +398,7 @@ export function KnowledgeOrganizer(): ReactElement {
 
 function LibraryTree({
   busy,
+  canCreate,
   folders,
   onCreateFolder,
   onSelect,
@@ -389,6 +406,7 @@ function LibraryTree({
   spaces,
 }: {
   busy: boolean;
+  canCreate: boolean;
   folders: KnowledgeFolder[];
   onCreateFolder: (name: string, parentId: string | null) => Promise<void>;
   onSelect: (selection: ContainerSelection) => void;
@@ -445,30 +463,32 @@ function LibraryTree({
               </button>
             ))}
           </div>
-          <form
-            className="folder-create"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!folderName.trim()) return;
-              void onCreateFolder(folderName.trim(), parentId).then(() => setFolderName(''));
-            }}
-          >
-            <input
-              aria-label="文件夹名称"
-              disabled={busy}
-              onChange={(event) => setFolderName(event.target.value)}
-              placeholder={parentId ? '新建子文件夹' : '新建文件夹'}
-              value={folderName}
-            />
-            <button
-              aria-label="创建文件夹"
-              disabled={busy || !folderName.trim()}
-              title="创建文件夹"
-              type="submit"
+          {canCreate ? (
+            <form
+              className="folder-create"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!folderName.trim()) return;
+                void onCreateFolder(folderName.trim(), parentId).then(() => setFolderName(''));
+              }}
             >
-              <FolderPlus size={15} />
-            </button>
-          </form>
+              <input
+                aria-label="文件夹名称"
+                disabled={busy}
+                onChange={(event) => setFolderName(event.target.value)}
+                placeholder={parentId ? '新建子文件夹' : '新建文件夹'}
+                value={folderName}
+              />
+              <button
+                aria-label="创建文件夹"
+                disabled={busy || !folderName.trim()}
+                title="创建文件夹"
+                type="submit"
+              >
+                <FolderPlus size={15} />
+              </button>
+            </form>
+          ) : null}
         </>
       ) : null}
     </aside>
@@ -767,6 +787,7 @@ function TagManager({
   onCreate,
   onDelete,
   onUpdate,
+  readOnly,
   tags,
 }: {
   busy: boolean;
@@ -778,6 +799,7 @@ function TagManager({
     color: string,
     description: string | null,
   ) => Promise<void>;
+  readOnly: boolean;
   tags: KnowledgeTag[];
 }): ReactElement {
   const [name, setName] = useState('');
@@ -787,44 +809,50 @@ function TagManager({
 
   return (
     <section className="tag-manager">
-      <div className="tag-create-band">
-        <div className="knowledge-pane-heading">
-          <div>
-            <strong>新建标签</strong>
-            <span>{tags.length} 个标签</span>
+      {!readOnly ? (
+        <div className="tag-create-band">
+          <div className="knowledge-pane-heading">
+            <div>
+              <strong>新建标签</strong>
+              <span>{tags.length} 个标签</span>
+            </div>
+            <Tag size={18} />
           </div>
-          <Tag size={18} />
+          <div className="tag-create-form">
+            <input
+              className="text-input"
+              onChange={(event) => setName(event.target.value)}
+              placeholder="标签名称"
+              value={name}
+            />
+            <label className="color-input" title="标签颜色">
+              <input
+                onChange={(event) => setColor(event.target.value)}
+                type="color"
+                value={color}
+              />
+              <span>{color.toUpperCase()}</span>
+            </label>
+            <input
+              className="text-input"
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="说明"
+              value={description}
+            />
+            <Button
+              disabled={busy || !name.trim()}
+              onClick={() =>
+                void onCreate(name.trim(), color, description.trim() || null).then(() => {
+                  setName('');
+                  setDescription('');
+                })
+              }
+            >
+              <Plus size={15} /> 创建标签
+            </Button>
+          </div>
         </div>
-        <div className="tag-create-form">
-          <input
-            className="text-input"
-            onChange={(event) => setName(event.target.value)}
-            placeholder="标签名称"
-            value={name}
-          />
-          <label className="color-input" title="标签颜色">
-            <input onChange={(event) => setColor(event.target.value)} type="color" value={color} />
-            <span>{color.toUpperCase()}</span>
-          </label>
-          <input
-            className="text-input"
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="说明"
-            value={description}
-          />
-          <Button
-            disabled={busy || !name.trim()}
-            onClick={() =>
-              void onCreate(name.trim(), color, description.trim() || null).then(() => {
-                setName('');
-                setDescription('');
-              })
-            }
-          >
-            <Plus size={15} /> 创建标签
-          </Button>
-        </div>
-      </div>
+      ) : null}
       <div className="tag-table">
         <div className="tag-table-head">
           <span>标签</span>
@@ -853,26 +881,32 @@ function TagManager({
               <span>{tag.description ?? '未填写'}</span>
               <span>{tag.documentCount}</span>
               <span className="tag-actions">
-                <button
-                  aria-label={`编辑标签 ${tag.name}`}
-                  className="icon-button"
-                  disabled={busy}
-                  onClick={() => setEditingId(tag.id)}
-                  title="编辑"
-                  type="button"
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  aria-label={`删除标签 ${tag.name}`}
-                  className="icon-button danger"
-                  disabled={busy}
-                  onClick={() => void onDelete(tag)}
-                  title="删除"
-                  type="button"
-                >
-                  <Trash2 size={14} />
-                </button>
+                {!readOnly ? (
+                  <>
+                    <button
+                      aria-label={`编辑标签 ${tag.name}`}
+                      className="icon-button"
+                      disabled={busy}
+                      onClick={() => setEditingId(tag.id)}
+                      title="编辑"
+                      type="button"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      aria-label={`删除标签 ${tag.name}`}
+                      className="icon-button danger"
+                      disabled={busy}
+                      onClick={() => void onDelete(tag)}
+                      title="删除"
+                      type="button"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <span>只读</span>
+                )}
               </span>
             </div>
           ),
@@ -1077,22 +1111,31 @@ function filterDocuments(
     : documents.filter((document) => document.folderId === selection.id);
 }
 
-function buildPrincipalChoices(access: AccessOverviewResponse | null): PrincipalChoice[] {
-  if (!access) return [];
-  return [
-    { id: `tenant:${access.tenant.id}`, label: access.tenant.name, type: '整个租户' },
-    ...access.departments.map((department) => ({
-      id: `department:${department.id}`,
-      label: department.name,
-      type: '部门',
-    })),
-    ...access.roles.map((role) => ({ id: `role:${role.id}`, label: role.name, type: '角色' })),
-    ...access.members.map((member) => ({
-      id: `user:${member.id}`,
-      label: member.displayName,
-      type: '成员',
-    })),
-  ];
+function ReadOnlyInspector({ title }: { title: string }): ReactElement {
+  return (
+    <aside className="knowledge-inspector empty">
+      <ShieldCheck size={24} />
+      <strong>{title}</strong>
+      <span>当前账号仅可查看</span>
+    </aside>
+  );
+}
+
+function buildPrincipalChoices(
+  directory: AccessPrincipalDirectoryResponse | null,
+): PrincipalChoice[] {
+  if (!directory) return [];
+  const labels = {
+    tenant: '整个租户',
+    user: '成员',
+    department: '部门',
+    role: '角色',
+  };
+  return directory.principals.map((principal) => ({
+    id: principal.id,
+    label: principal.label,
+    type: labels[principal.type],
+  }));
 }
 
 function toggleValue(values: string[], value: string, included: boolean): string[] {

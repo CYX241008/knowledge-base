@@ -17,6 +17,7 @@ export class AuthController {
       tenantId: auth.tenantId,
       userId: auth.userId,
       principalIds: [...auth.principalIds].sort(),
+      permissionKeys: [...auth.permissionKeys].sort(),
       mode: auth.mode,
     });
   }

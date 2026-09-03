@@ -1,5 +1,5 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import {
   DOCUMENT_ACL_PROJECTION_QUEUE,
   DOCUMENT_CLEANUP_QUEUE,
@@ -11,6 +11,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { IngestionController } from './ingestion.controller';
 import { IngestionService } from './ingestion.service';
 import { OutboxDispatcherService } from './outbox-dispatcher.service';
+import { AccessControlModule } from '../access-control/access-control.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { OutboxDispatcherService } from './outbox-dispatcher.service';
       { name: DOCUMENT_SEARCH_PROJECTION_QUEUE },
     ),
     TypeOrmModule.forFeature([IngestionJobEntity, OutboxEventEntity]),
+    forwardRef(() => AccessControlModule),
   ],
   controllers: [IngestionController],
   providers: [IngestionService, OutboxDispatcherService],

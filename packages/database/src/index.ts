@@ -11,6 +11,7 @@ import { KnowledgeOrganization1754265600000 } from './migrations/1754265600000-k
 import { SearchGovernance1754352000000 } from './migrations/1754352000000-search-governance';
 import { SystemGovernance1754438400000 } from './migrations/1754438400000-system-governance';
 import { DocumentReview1754524800000 } from './migrations/1754524800000-document-review';
+import { PermissionHardening1754611200000 } from './migrations/1754611200000-permission-hardening';
 
 export * from './entities';
 
@@ -25,6 +26,7 @@ export const databaseMigrations = [
   SearchGovernance1754352000000,
   SystemGovernance1754438400000,
   DocumentReview1754524800000,
+  PermissionHardening1754611200000,
 ] as const;
 
 export function createDatabaseOptions(

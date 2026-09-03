@@ -19,28 +19,34 @@ export const HealthResponseSchema = z.object({
 });
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 
-export const AuthSessionResponseSchema = z.object({
-  tenantId: z.string().uuid(),
-  userId: z.string().uuid(),
-  principalIds: z.array(z.string().min(1)),
-  mode: z.enum(['demo', 'jwt']),
-});
-export type AuthSessionResponse = z.infer<typeof AuthSessionResponseSchema>;
-
-export const accessPermissionKeys = [
+export const tenantAccessPermissionKeys = [
   'access.manage',
   'system.manage',
   'knowledge.manage',
   'documents.create',
+  'documents.review',
+] as const;
+
+export const documentResourcePermissionKeys = [
   'documents.read',
   'documents.update',
   'documents.delete',
   'documents.manage',
   'documents.share',
-  'documents.review',
+] as const;
+
+export const accessPermissionKeys = [
+  ...tenantAccessPermissionKeys,
+  ...documentResourcePermissionKeys,
 ] as const;
 export const AccessPermissionKeySchema = z.enum(accessPermissionKeys);
 export type AccessPermissionKey = z.infer<typeof AccessPermissionKeySchema>;
+export const TenantAccessPermissionKeySchema = z.enum(tenantAccessPermissionKeys);
+export type TenantAccessPermissionKey = z.infer<typeof TenantAccessPermissionKeySchema>;
+export const DocumentResourcePermissionKeySchema = z.enum(documentResourcePermissionKeys);
+export type DocumentResourcePermissionKey = z.infer<typeof DocumentResourcePermissionKeySchema>;
+export const AccessPermissionScopeSchema = z.enum(['tenant', 'resource']);
+export type AccessPermissionScope = z.infer<typeof AccessPermissionScopeSchema>;
 
 export const accessPrincipalTypes = ['tenant', 'user', 'department', 'role'] as const;
 export const AccessPrincipalTypeSchema = z.enum(accessPrincipalTypes);
@@ -51,6 +57,15 @@ export const AccessPrincipalIdSchema = z
   .regex(
     /^(?:tenant|user|department|role):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
   );
+
+export const AuthSessionResponseSchema = z.object({
+  tenantId: z.string().uuid(),
+  userId: z.string().uuid(),
+  principalIds: z.array(AccessPrincipalIdSchema),
+  permissionKeys: z.array(TenantAccessPermissionKeySchema),
+  mode: z.enum(['demo', 'jwt']),
+});
+export type AuthSessionResponse = z.infer<typeof AuthSessionResponseSchema>;
 
 export const DOCUMENT_INGESTION_QUEUE = 'document-ingestion';
 export const DOCUMENT_INGESTION_JOB = 'ingest-document';
@@ -686,7 +701,10 @@ export type UpsertOrganizationMemberRequest = z.infer<typeof UpsertOrganizationM
 export const CreateAccessRoleRequestSchema = z.object({
   name: z.string().trim().min(1).max(128),
   description: z.string().trim().max(1_000).nullable().optional(),
-  permissionKeys: z.array(AccessPermissionKeySchema).max(accessPermissionKeys.length).default([]),
+  permissionKeys: z
+    .array(TenantAccessPermissionKeySchema)
+    .max(tenantAccessPermissionKeys.length)
+    .default([]),
 });
 export type CreateAccessRoleRequest = z.infer<typeof CreateAccessRoleRequestSchema>;
 
@@ -706,10 +724,36 @@ export const AssignDepartmentMembersRequestSchema = z.object({
 });
 export type AssignDepartmentMembersRequest = z.infer<typeof AssignDepartmentMembersRequestSchema>;
 
-export const ReplaceDocumentAclRequestSchema = z.object({
-  principalIds: z.array(AccessPrincipalIdSchema).min(1).max(100),
-});
+export const ReplaceDocumentAclRequestSchema = z
+  .object({
+    principalIds: z.array(AccessPrincipalIdSchema).max(100).optional(),
+    grants: z
+      .array(
+        z.object({
+          principalId: AccessPrincipalIdSchema,
+          permissions: z
+            .array(DocumentResourcePermissionKeySchema)
+            .min(1)
+            .max(documentResourcePermissionKeys.length),
+        }),
+      )
+      .max(100)
+      .optional(),
+  })
+  .superRefine((value, context) => {
+    if ((value.principalIds === undefined) === (value.grants === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Provide exactly one of principalIds or grants',
+      });
+    }
+  });
 export type ReplaceDocumentAclRequest = z.infer<typeof ReplaceDocumentAclRequestSchema>;
+export const DocumentAclGrantSchema = z.object({
+  principalId: AccessPrincipalIdSchema,
+  permissions: z.array(DocumentResourcePermissionKeySchema),
+});
+export type DocumentAclGrant = z.infer<typeof DocumentAclGrantSchema>;
 
 export const OrganizationMemberSchema = z.object({
   id: z.string().uuid(),
@@ -726,7 +770,7 @@ export const AccessRoleSchema = z.object({
   name: z.string(),
   description: z.string().nullable(),
   isSystem: z.boolean(),
-  permissionKeys: z.array(AccessPermissionKeySchema),
+  permissionKeys: z.array(TenantAccessPermissionKeySchema),
   memberCount: z.number().int().nonnegative(),
 });
 export type AccessRole = z.infer<typeof AccessRoleSchema>;
@@ -735,6 +779,7 @@ export const AccessPermissionSchema = z.object({
   key: AccessPermissionKeySchema,
   name: z.string(),
   description: z.string(),
+  scope: AccessPermissionScopeSchema,
 });
 export type AccessPermission = z.infer<typeof AccessPermissionSchema>;
 
@@ -746,11 +791,27 @@ export const OrganizationDepartmentSchema = z.object({
 });
 export type OrganizationDepartment = z.infer<typeof OrganizationDepartmentSchema>;
 
+export const AccessPrincipalDirectoryResponseSchema = z.object({
+  tenant: z.object({ id: z.string().uuid(), name: z.string() }),
+  principals: z.array(
+    z.object({
+      id: AccessPrincipalIdSchema,
+      type: AccessPrincipalTypeSchema,
+      label: z.string(),
+    }),
+  ),
+});
+export type AccessPrincipalDirectoryResponse = z.infer<
+  typeof AccessPrincipalDirectoryResponseSchema
+>;
+
 export const AccessDocumentSummarySchema = z.object({
   id: z.string().uuid(),
   title: z.string(),
   status: DocumentStatusSchema,
   aclVersion: z.number().int().positive(),
+  directGrants: z.array(DocumentAclGrantSchema),
+  effectivePrincipalIds: z.array(AccessPrincipalIdSchema),
   principalIds: z.array(AccessPrincipalIdSchema),
 });
 export type AccessDocumentSummary = z.infer<typeof AccessDocumentSummarySchema>;
@@ -768,6 +829,8 @@ export type AccessOverviewResponse = z.infer<typeof AccessOverviewResponseSchema
 export const ReplaceDocumentAclResponseSchema = z.object({
   documentId: z.string().uuid(),
   aclVersion: z.number().int().positive(),
+  directGrants: z.array(DocumentAclGrantSchema),
+  effectivePrincipalIds: z.array(AccessPrincipalIdSchema),
   principalIds: z.array(AccessPrincipalIdSchema),
   projectionStatus: z.literal('queued'),
 });
@@ -891,6 +954,7 @@ export const OrganizedDocumentSchema = z.object({
   tagIds: z.array(z.string().uuid()),
   aclVersion: z.number().int().positive(),
   searchProjectionVersion: z.number().int().positive(),
+  allowedPermissions: z.array(DocumentResourcePermissionKeySchema),
 });
 export type OrganizedDocument = z.infer<typeof OrganizedDocumentSchema>;
 

@@ -10,6 +10,7 @@ const issuer = 'https://identity.example';
 const audience = 'knowledge-base';
 const tenantId = '11111111-1111-4111-8111-111111111111';
 const userId = '22222222-2222-4222-8222-222222222222';
+const roleId = '33333333-3333-4333-8333-333333333333';
 const keys = new Map<string, CryptoKey>();
 let firstPrivateKey: CryptoKey;
 let secondPrivateKey: CryptoKey;
@@ -38,7 +39,8 @@ describe('AuthenticationGuard JWT mode', () => {
     expect(firstRequest.knowledgeBaseAuth).toEqual({
       tenantId,
       userId,
-      principalIds: [`user:${userId}`, `tenant:${tenantId}`, 'role:reader'],
+      principalIds: [`tenant:${tenantId}`, `user:${userId}`, `role:${roleId}`],
+      permissionKeys: [],
       mode: 'jwt',
     });
 
@@ -54,6 +56,10 @@ describe('AuthenticationGuard JWT mode', () => {
     ['wrong audience', { audience: 'another-service' }],
     ['invalid tenant claim', { tenantId: 'not-a-uuid' }],
     ['invalid principal claim', { principalIds: [] }],
+    [
+      'cross-tenant principal claim',
+      { principalIds: ['tenant:55555555-5555-4555-8555-555555555555'] },
+    ],
   ])('rejects %s', async (_label, overrides) => {
     const token = await signToken(firstPrivateKey, 'key-1', overrides);
     await expect(guard.canActivate(contextFor(requestWithToken(token)))).rejects.toBeInstanceOf(
@@ -65,6 +71,21 @@ describe('AuthenticationGuard JWT mode', () => {
     await expect(guard.canActivate(contextFor({ headers: {} }))).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
+  });
+
+  it('separates tenant permission claims from ACL principals', async () => {
+    const request = requestWithToken(
+      await signToken(firstPrivateKey, 'key-1', {
+        principalIds: [`tenant:${tenantId}`, `role:${roleId}`, 'permission:knowledge.manage'],
+      }),
+    );
+    await expect(guard.canActivate(contextFor(request))).resolves.toBe(true);
+    expect(request.knowledgeBaseAuth?.principalIds).toEqual([
+      `tenant:${tenantId}`,
+      `user:${userId}`,
+      `role:${roleId}`,
+    ]);
+    expect(request.knowledgeBaseAuth?.permissionKeys).toEqual(['knowledge.manage']);
   });
 });
 
@@ -115,7 +136,7 @@ async function signToken(
 ): Promise<string> {
   return new SignJWT({
     tenant_id: overrides.tenantId ?? tenantId,
-    principal_ids: overrides.principalIds ?? [`tenant:${tenantId}`, 'role:reader'],
+    principal_ids: overrides.principalIds ?? [`tenant:${tenantId}`, `role:${roleId}`],
   })
     .setProtectedHeader({ alg: 'RS256', kid })
     .setSubject(userId)
