@@ -5,7 +5,13 @@ import { basename, resolve } from 'node:path';
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:4000/api';
 const tenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID ?? '11111111-1111-4111-8111-111111111111';
 const sourcePath = resolve(process.argv[2] ?? 'packages/rag/test-fixtures/search-sample.md');
-const bytes = await readFile(sourcePath);
+const marker = `rag-grounded-${Date.now()}`;
+const bytes = Buffer.concat([
+  await readFile(sourcePath),
+  Buffer.from(
+    `\n\n## Unique grounded marker\n\n${marker} verifies grounded citation persistence for this evaluation run.\n`,
+  ),
+]);
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 let documentId;
 const conversationIds = new Set();
@@ -20,11 +26,11 @@ try {
       mimeType: 'text/markdown',
       sizeBytes: bytes.byteLength,
       sha256,
-      principalIds: ['role:forged-client-principal'],
+      principalIds: ['role:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
     }),
   });
-  if (forbidden.status !== 403) {
-    throw new Error(`Forged document principal should return 403, received ${forbidden.status}`);
+  if (forbidden.status !== 400) {
+    throw new Error(`Unknown document principal should return 400, received ${forbidden.status}`);
   }
 
   const created = await request(`${apiBase}/documents/uploads`, {
@@ -32,7 +38,7 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       tenantId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      title: 'Phase 7 Grounded Answer E2E',
+      title: `Phase 7 Grounded Answer E2E ${marker}`,
       sourceFilename: basename(sourcePath),
       mimeType: 'text/markdown',
       sizeBytes: bytes.byteLength,
@@ -67,7 +73,7 @@ try {
     },
   );
 
-  const grounded = await streamAnswer('量子凤梨索引的用途是什么？');
+  const grounded = await streamAnswer(`What does ${marker} verify?`);
   if (!grounded.grounded) throw new Error('Relevant question was not marked as grounded');
   if (!grounded.answer.includes('[1]')) throw new Error('Grounded answer has no citation marker');
   if (!grounded.citations.some((citation) => citation.documentId === created.documentId)) {
@@ -130,6 +136,7 @@ try {
     JSON.stringify(
       {
         documentId: created.documentId,
+        marker,
         forgedAclRejected: true,
         clientIdentityIgnored: true,
         grounded: grounded.grounded,

@@ -180,7 +180,7 @@ export const CreateDocumentUploadRequestSchema = z.object({
   sizeBytes: z.number().int().positive(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i),
   createdBy: z.string().uuid().optional(),
-  principalIds: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
+  principalIds: z.array(AccessPrincipalIdSchema).max(100).optional(),
 });
 export type CreateDocumentUploadRequest = z.infer<typeof CreateDocumentUploadRequestSchema>;
 

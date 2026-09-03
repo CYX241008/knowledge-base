@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DocumentAclProjectionJobSchema,
   CreateAccessRoleRequestSchema,
+  CreateDocumentUploadRequestSchema,
   DocumentIngestionJobSchema,
   DocumentSearchProjectionJobSchema,
   DocumentReviewQuerySchema,
@@ -142,6 +143,28 @@ describe('reliable queue contracts', () => {
     };
     expect(DocumentIngestionJobSchema.safeParse({ ...payload, generation: 1 }).success).toBe(true);
     expect(DocumentIngestionJobSchema.safeParse({ ...payload, generation: 0 }).success).toBe(false);
+  });
+
+  it('rejects malformed document upload principals at the API contract boundary', () => {
+    const upload = {
+      title: 'Restricted document',
+      sourceFilename: 'restricted.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 10,
+      sha256: 'a'.repeat(64),
+    };
+    expect(
+      CreateDocumentUploadRequestSchema.safeParse({
+        ...upload,
+        principalIds: ['role:33333333-3333-4333-8333-333333333333'],
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateDocumentUploadRequestSchema.safeParse({
+        ...upload,
+        principalIds: ['role:forged-client-principal'],
+      }).success,
+    ).toBe(false);
   });
 
   it('strips client-supplied identity fields from search input', () => {
