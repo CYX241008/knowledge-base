@@ -3,16 +3,19 @@ import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
 import type {
   AnswerCitation,
+  AnswerRunStatus,
   AskQuestionRequest,
   AskQuestionResponse,
   SearchDocumentHit,
 } from '@knowledge-base/contracts';
 import {
+  AnswerRunEntity,
   ChatCitationEntity,
   ChatConversationEntity,
   ChatMessageEntity,
 } from '@knowledge-base/database';
 import { createChatGateway, type ModelGateway } from '@knowledge-base/model-gateway';
+import { logEvent } from '@knowledge-base/observability';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import type { AuthContext } from '../auth/auth-context';
@@ -24,6 +27,7 @@ import { ModelQuotaService } from '../observability/model-quota.service';
 export type AnswerStreamEvent =
   | {
       type: 'meta';
+      runId: string;
       conversationId: string;
       messageId: string;
       model: string;
@@ -72,68 +76,135 @@ export class AnswersService {
     input: AskQuestionRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<AnswerStreamEvent> {
-    const conversation = await this.resolveConversation(auth, input);
-    const userMessage = this.dataSource.getRepository(ChatMessageEntity).create({
-      id: randomUUID(),
-      tenantId: auth.tenantId,
-      conversationId: conversation.id,
-      role: 'user',
-      content: input.question,
-      model: null,
-    });
-    await this.dataSource.getRepository(ChatMessageEntity).save(userMessage);
-
-    const search = await this.searchService.search({
-      text: input.question,
-      page: 1,
-      limit: input.limit,
-      tenantId: auth.tenantId,
-      userId: auth.userId,
-      principalIds: auth.principalIds,
-      source: 'answer',
-      signal,
-      includeDiagnostics: input.includeDiagnostics,
-      recordQuery: !input.includeDiagnostics,
-    });
-    const relevantHits = search.hits.filter(
-      (hit) => hit.score > this.config.getOrThrow('RAG_MIN_RELEVANCE'),
-    );
-    const citations = relevantHits.map(toCitation);
-    const messageId = randomUUID();
-    const model = this.config.getOrThrow('CHAT_MODEL');
-    yield { type: 'meta', conversationId: conversation.id, messageId, model, citations };
-
-    let answer = '';
-    if (citations.length === 0) {
-      answer = '当前知识库中没有足够证据回答这个问题。';
-      yield { type: 'token', content: answer };
-    } else if (!this.chatGateway) {
-      answer = localExtractiveAnswer(relevantHits);
-      yield { type: 'token', content: answer };
-    } else {
-      const messages = buildGroundedMessages(
-        input.question,
-        relevantHits,
-        this.config.getOrThrow('RAG_MAX_CONTEXT_CHARACTERS'),
+    const { conversation, runId } = await this.startAnswerRun(auth, input);
+    let runFinalized = false;
+    try {
+      throwIfAborted(signal);
+      const search = await this.searchService.search({
+        text: input.question,
+        page: 1,
+        limit: input.limit,
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        principalIds: auth.principalIds,
+        source: 'answer',
+        signal,
+        includeDiagnostics: input.includeDiagnostics,
+        recordQuery: !input.includeDiagnostics,
+      });
+      const relevantHits = search.hits.filter(
+        (hit) => hit.score > this.config.getOrThrow('RAG_MIN_RELEVANCE'),
       );
-      for await (const token of this.chatGateway.streamChat({ model, messages, signal })) {
-        answer += token;
-        yield { type: 'token', content: token };
-      }
-      if (!answer.trim()) throw new Error('Model returned an empty answer');
-    }
+      const citations = relevantHits.map(toCitation);
+      const messageId = randomUUID();
+      const model = this.config.getOrThrow('CHAT_MODEL');
+      yield {
+        type: 'meta',
+        runId,
+        conversationId: conversation.id,
+        messageId,
+        model,
+        citations,
+      };
 
-    const response: AskQuestionResponse = {
-      conversationId: conversation.id,
-      messageId,
-      answer,
-      grounded: citations.length > 0,
-      model,
-      citations,
-      ...(search.diagnostics ? { retrievalDiagnostics: search.diagnostics } : {}),
-    };
-    await this.persistAnswer(auth, response);
-    yield { type: 'done', response };
+      let answer = '';
+      if (citations.length === 0) {
+        answer = '当前知识库中没有足够证据回答这个问题。';
+        yield { type: 'token', content: answer };
+      } else if (!this.chatGateway) {
+        answer = localExtractiveAnswer(relevantHits);
+        yield { type: 'token', content: answer };
+      } else {
+        const messages = buildGroundedMessages(
+          input.question,
+          relevantHits,
+          this.config.getOrThrow('RAG_MAX_CONTEXT_CHARACTERS'),
+        );
+        for await (const token of this.chatGateway.streamChat({ model, messages, signal })) {
+          answer += token;
+          yield { type: 'token', content: token };
+        }
+        if (!answer.trim()) throw new Error('Model returned an empty answer');
+      }
+
+      throwIfAborted(signal);
+      const response: AskQuestionResponse = {
+        runId,
+        conversationId: conversation.id,
+        messageId,
+        answer,
+        grounded: citations.length > 0,
+        model,
+        citations,
+        ...(search.diagnostics ? { retrievalDiagnostics: search.diagnostics } : {}),
+      };
+      await this.persistAnswer(auth, response);
+      runFinalized = true;
+      yield { type: 'done', response };
+    } catch (error) {
+      runFinalized = true;
+      const status: AnswerRunStatus =
+        signal?.aborted || isAbortError(error) ? 'cancelled' : 'failed';
+      await this.markRunTerminal(
+        auth.tenantId,
+        runId,
+        status,
+        answerRunErrorCode(error, status),
+      ).catch((updateError) =>
+        logEvent('answer.run_status_update_failed', {
+          runId,
+          targetStatus: status,
+          message: updateError instanceof Error ? updateError.message : 'Unknown answer run error',
+        }),
+      );
+      throw error;
+    } finally {
+      if (!runFinalized) {
+        const errorCode = signal?.aborted ? 'request_cancelled' : 'stream_closed';
+        await this.markRunTerminal(auth.tenantId, runId, 'cancelled', errorCode).catch((error) =>
+          logEvent('answer.run_status_update_failed', {
+            runId,
+            targetStatus: 'cancelled',
+            message: error instanceof Error ? error.message : 'Unknown answer run error',
+          }),
+        );
+      }
+    }
+  }
+
+  private async startAnswerRun(
+    auth: AuthContext,
+    input: AskQuestionRequest,
+  ): Promise<{ conversation: ChatConversationEntity; runId: string }> {
+    const conversation = await this.resolveConversation(auth, input);
+    const userMessageId = randomUUID();
+    const runId = randomUUID();
+    await this.dataSource.transaction(async (manager) => {
+      await manager.getRepository(ChatConversationEntity).save(conversation);
+      await manager.getRepository(ChatMessageEntity).save(
+        manager.getRepository(ChatMessageEntity).create({
+          id: userMessageId,
+          tenantId: auth.tenantId,
+          conversationId: conversation.id,
+          role: 'user',
+          content: input.question,
+          model: null,
+        }),
+      );
+      await manager.getRepository(AnswerRunEntity).save(
+        manager.getRepository(AnswerRunEntity).create({
+          id: runId,
+          tenantId: auth.tenantId,
+          conversationId: conversation.id,
+          userMessageId,
+          assistantMessageId: null,
+          status: 'running',
+          errorCode: null,
+          completedAt: null,
+        }),
+      );
+    });
+    return { conversation, runId };
   }
 
   private async resolveConversation(
@@ -151,16 +222,14 @@ export class AnswersService {
       });
       if (!existing) throw new NotFoundException(`Conversation ${input.conversationId} not found`);
       existing.updatedAt = new Date();
-      return repository.save(existing);
+      return existing;
     }
-    return repository.save(
-      repository.create({
-        id: randomUUID(),
-        tenantId: auth.tenantId,
-        createdBy: auth.userId,
-        title: input.question.slice(0, 255),
-      }),
-    );
+    return repository.create({
+      id: randomUUID(),
+      tenantId: auth.tenantId,
+      createdBy: auth.userId,
+      title: input.question.slice(0, 255),
+    });
   }
 
   private async persistAnswer(auth: AuthContext, response: AskQuestionResponse): Promise<void> {
@@ -193,7 +262,33 @@ export class AnswersService {
           ),
         );
       }
+      const result = await manager.getRepository(AnswerRunEntity).update(
+        { id: response.runId, tenantId: auth.tenantId, status: 'running' },
+        {
+          assistantMessageId: response.messageId,
+          status: 'completed',
+          errorCode: null,
+          completedAt: new Date(),
+        },
+      );
+      if (result.affected !== 1) {
+        throw new Error(`Answer run ${response.runId} is no longer running`);
+      }
     });
+  }
+
+  private async markRunTerminal(
+    tenantId: string,
+    runId: string,
+    status: Extract<AnswerRunStatus, 'failed' | 'cancelled'>,
+    errorCode: string,
+  ): Promise<void> {
+    await this.dataSource
+      .getRepository(AnswerRunEntity)
+      .update(
+        { id: runId, tenantId, status: 'running' },
+        { status, errorCode, completedAt: new Date() },
+      );
   }
 }
 
@@ -258,4 +353,42 @@ function sourceLabel(hit: SearchDocumentHit): string {
   if (hit.source.slide) return `slide ${hit.source.slide}`;
   if (hit.source.sheet) return `sheet ${hit.source.sheet}`;
   return hit.source.heading ?? 'document';
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error('The operation was aborted');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+export function answerRunErrorCode(
+  error: unknown,
+  status: Extract<AnswerRunStatus, 'failed' | 'cancelled'>,
+): string {
+  if (status === 'cancelled') return 'request_cancelled';
+  if (!(error instanceof Error)) return 'answer_failed';
+  const namedCodes: Record<string, string> = {
+    ModelGatewayUnavailableError: 'model_gateway_unavailable',
+    ModelGatewayOverloadedError: 'model_gateway_overloaded',
+    ModelGatewayRateLimitError: 'model_rate_limited',
+    ModelHttpError: 'model_http_error',
+    TimeoutError: 'model_timeout',
+  };
+  const namedCode = namedCodes[error.name];
+  if (namedCode) return namedCode;
+  const errorCode = (error as Error & { code?: unknown }).code;
+  if (
+    typeof errorCode === 'string' &&
+    errorCode.length <= 128 &&
+    /^[A-Za-z0-9_.-]+$/u.test(errorCode)
+  ) {
+    return errorCode.toLowerCase();
+  }
+  return 'answer_failed';
 }

@@ -12,6 +12,7 @@ import { SearchGovernance1754352000000 } from './migrations/1754352000000-search
 import { SystemGovernance1754438400000 } from './migrations/1754438400000-system-governance';
 import { DocumentReview1754524800000 } from './migrations/1754524800000-document-review';
 import { PermissionHardening1754611200000 } from './migrations/1754611200000-permission-hardening';
+import { AnswerRun1788364800000 } from './migrations/1788364800000-answer-run';
 
 export * from './entities';
 
@@ -27,6 +28,7 @@ export const databaseMigrations = [
   SystemGovernance1754438400000,
   DocumentReview1754524800000,
   PermissionHardening1754611200000,
+  AnswerRun1788364800000,
 ] as const;
 
 export function createDatabaseOptions(

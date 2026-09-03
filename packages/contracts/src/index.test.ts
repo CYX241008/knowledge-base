@@ -5,6 +5,7 @@ import {
   DocumentIngestionJobSchema,
   DocumentSearchProjectionJobSchema,
   DocumentReviewQuerySchema,
+  ConversationDetailResponseSchema,
   RejectDocumentReviewRequestSchema,
   MoveDocumentRequestSchema,
   ReplaceDocumentAclRequestSchema,
@@ -205,6 +206,37 @@ describe('reliable queue contracts', () => {
     expect(
       SearchDocumentsResponseSchema.safeParse({ ...response, queryEventId: undefined }).success,
     ).toBe(false);
+  });
+
+  it('exposes answer run state with conversation messages', () => {
+    const userMessageId = '22222222-2222-4222-8222-222222222222';
+    const parsed = ConversationDetailResponseSchema.parse({
+      id: '11111111-1111-4111-8111-111111111111',
+      title: 'Answer lifecycle',
+      createdAt: '2026-09-03T00:00:00.000Z',
+      updatedAt: '2026-09-03T00:00:01.000Z',
+      messages: [
+        {
+          id: userMessageId,
+          role: 'user',
+          content: 'What happened?',
+          model: null,
+          createdAt: '2026-09-03T00:00:00.000Z',
+          citations: [],
+          answerRun: {
+            id: '33333333-3333-4333-8333-333333333333',
+            userMessageId,
+            assistantMessageId: null,
+            status: 'failed',
+            errorCode: 'model_timeout',
+            startedAt: '2026-09-03T00:00:00.000Z',
+            completedAt: '2026-09-03T00:00:01.000Z',
+          },
+        },
+      ],
+    });
+
+    expect(parsed.messages[0]?.answerRun?.status).toBe('failed');
   });
 
   it('validates tenant retrieval and audit settings', () => {

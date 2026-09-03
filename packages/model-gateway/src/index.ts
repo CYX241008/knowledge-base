@@ -4,6 +4,7 @@ import {
   type ModelCircuitBreakerInput,
   type ModelCircuitPermit,
 } from './circuit-breaker.js';
+import { randomUUID } from 'node:crypto';
 
 export {
   LocalModelCircuitBreaker,
@@ -14,17 +15,31 @@ export {
   type ModelCircuitState,
 } from './circuit-breaker.js';
 
+export type ModelCallContext = {
+  tenantId?: string;
+  userId?: string;
+  runId?: string;
+  source?: 'answer' | 'search' | 'ingestion' | 'health';
+};
+
 export type EmbeddingRequest = {
   model: string;
   inputs: string[];
   dimensions?: number;
   signal?: AbortSignal;
+  context?: ModelCallContext;
 };
 export type ChatMessage = {
   role: 'developer' | 'system' | 'user' | 'assistant';
   content: string;
 };
-export type StreamChatRequest = { model: string; messages: ChatMessage[]; signal?: AbortSignal };
+export type StreamChatRequest = {
+  model: string;
+  messages: ChatMessage[];
+  maxOutputTokens?: number;
+  signal?: AbortSignal;
+  context?: ModelCallContext;
+};
 
 export interface ModelGateway {
   embed(request: EmbeddingRequest): Promise<number[][]>;
@@ -37,6 +52,7 @@ export type RerankRequest = {
   documents: Array<{ id: string; text: string }>;
   topN: number;
   signal?: AbortSignal;
+  context?: ModelCallContext;
 };
 export type RerankResult = { id: string; score: number };
 export interface RerankGateway {
@@ -53,7 +69,18 @@ export type ModelTokenUsage = {
   outputTokens: number;
   totalTokens: number;
 };
+export type ModelUsageSource = 'provider' | 'estimated' | 'reserved';
+export type ModelAttemptMetric = {
+  attempt: number;
+  status: 'success' | 'error' | 'cancelled';
+  durationMs: number;
+  reservedTokens: number;
+  usage: ModelTokenUsage;
+  usageSource: ModelUsageSource;
+  errorCode?: string;
+};
 export type ModelCallMetric = {
+  callId?: string;
   operation: ModelOperation;
   model: string;
   status: 'success' | 'error' | 'cancelled' | 'rejected';
@@ -63,22 +90,43 @@ export type ModelCallMetric = {
   inputCharacters: number;
   outputCharacters: number;
   usage?: ModelTokenUsage;
+  context?: ModelCallContext;
+  attemptMetrics?: ModelAttemptMetric[];
 };
-export type ModelCallObserver = (metric: ModelCallMetric) => void;
+export type ModelCallObserver = (metric: ModelCallMetric) => void | Promise<void>;
+export type ModelTokenRateLimits = {
+  global: number;
+  tenant: number;
+  user: number;
+  model: Partial<Record<ModelOperation, number>>;
+};
 export type ModelRateLimitInput = {
   operation: ModelOperation;
   model: string;
   limit: number;
+  estimatedTokens?: number;
+  tokenLimits?: ModelTokenRateLimits;
+  context?: ModelCallContext;
 };
-export type ModelRateLimitDecision = { allowed: boolean; retryAfterMs?: number };
+export type ModelQuotaReservation = {
+  id: string;
+  reservedTokens: number;
+};
+export type ModelRateLimitDecision = {
+  allowed: boolean;
+  retryAfterMs?: number;
+  reservation?: ModelQuotaReservation;
+};
 export interface ModelRateLimiter {
   consume(input: ModelRateLimitInput): Promise<ModelRateLimitDecision>;
+  settle(reservation: ModelQuotaReservation, actualTokens: number): Promise<void>;
 }
 
 export type ModelResilienceOptions = {
   maxConcurrency?: number;
   maxQueueSize?: number;
   requestsPerMinute?: number;
+  tokenRateLimits?: ModelTokenRateLimits;
   rateLimiter?: ModelRateLimiter;
   maxRetries?: number;
   retryBaseDelayMs?: number;

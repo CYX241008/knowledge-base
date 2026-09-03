@@ -94,6 +94,7 @@ type AnswerCitation = {
 };
 
 type AnswerResponse = {
+  runId: string;
   conversationId: string;
   messageId: string;
   answer: string;
@@ -109,6 +110,18 @@ type ConversationSummary = {
   updatedAt: string;
 };
 
+type AnswerRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+type ConversationAnswerRun = {
+  id: string;
+  userMessageId: string;
+  assistantMessageId: string | null;
+  status: AnswerRunStatus;
+  errorCode: string | null;
+  startedAt: string;
+  completedAt: string | null;
+};
+
 type ConversationDetail = ConversationSummary & {
   messages: Array<{
     id: string;
@@ -117,6 +130,7 @@ type ConversationDetail = ConversationSummary & {
     model: string | null;
     createdAt: string;
     citations: AnswerCitation[];
+    answerRun: ConversationAnswerRun | null;
   }>;
 };
 
@@ -180,6 +194,7 @@ export function DocumentWorkspace(): ReactElement {
   const [answerGrounded, setAnswerGrounded] = useState(false);
   const [answerCitations, setAnswerCitations] = useState<AnswerCitation[]>([]);
   const [answerError, setAnswerError] = useState<string | null>(null);
+  const [answerStatus, setAnswerStatus] = useState<AnswerRunStatus | null>(null);
   const [answering, setAnswering] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -512,6 +527,7 @@ export function DocumentWorkspace(): ReactElement {
     setAnswerGrounded(false);
     setAnswerCitations([]);
     setAnswerError(null);
+    setAnswerStatus('running');
     const abortController = new AbortController();
     answerAbortRef.current = abortController;
 
@@ -543,7 +559,7 @@ export function DocumentWorkspace(): ReactElement {
         const payload = JSON.parse(data) as
           | ({ type: 'meta' } & Pick<
               AnswerResponse,
-              'conversationId' | 'messageId' | 'model' | 'citations'
+              'runId' | 'conversationId' | 'messageId' | 'model' | 'citations'
             >)
           | { type: 'token'; content: string }
           | { type: 'done'; response: AnswerResponse }
@@ -563,6 +579,7 @@ export function DocumentWorkspace(): ReactElement {
           setAnswerModel(payload.response.model);
           setAnswerGrounded(payload.response.grounded);
           setAnswerCitations(payload.response.citations);
+          setAnswerStatus('completed');
         }
       };
 
@@ -579,9 +596,9 @@ export function DocumentWorkspace(): ReactElement {
       setQuestion('');
       await refreshConversations();
     } catch (error) {
-      setAnswerError(
-        error instanceof Error && error.name === 'AbortError' ? '已停止生成' : errorMessage(error),
-      );
+      const cancelled = error instanceof Error && error.name === 'AbortError';
+      setAnswerStatus(cancelled ? 'cancelled' : 'failed');
+      setAnswerError(cancelled ? '已停止生成' : errorMessage(error));
     } finally {
       if (answerAbortRef.current === abortController) answerAbortRef.current = null;
       setAnswering(false);
@@ -601,6 +618,7 @@ export function DocumentWorkspace(): ReactElement {
     setAnswerGrounded(false);
     setAnswerCitations([]);
     setAnswerError(null);
+    setAnswerStatus(null);
     setQuestion('');
   }
 
@@ -618,13 +636,26 @@ export function DocumentWorkspace(): ReactElement {
       const userMessages = detail.messages.filter((message) => message.role === 'user');
       const assistantMessages = detail.messages.filter((message) => message.role === 'assistant');
       const latestUser = userMessages[userMessages.length - 1];
-      const latestAssistant = assistantMessages[assistantMessages.length - 1];
+      const latestRun = latestUser?.answerRun ?? null;
+      const latestLegacyAssistant = [...assistantMessages]
+        .reverse()
+        .find((message) => !latestUser || message.createdAt >= latestUser.createdAt);
+      const latestAssistant = latestRun?.assistantMessageId
+        ? assistantMessages.find((message) => message.id === latestRun.assistantMessageId)
+        : latestRun
+          ? undefined
+          : latestLegacyAssistant;
       setConversationId(detail.id);
       setActiveQuestion(latestUser?.content ?? detail.title);
       setAnswer(latestAssistant?.content ?? '');
       setAnswerModel(latestAssistant?.model ?? null);
       setAnswerGrounded((latestAssistant?.citations.length ?? 0) > 0);
       setAnswerCitations(latestAssistant?.citations ?? []);
+      setAnswerStatus(latestRun?.status ?? (latestAssistant ? 'completed' : null));
+      setAnswerError(
+        answerRunMessage(latestRun) ??
+          (latestUser && !latestAssistant ? '该问题没有已保存的回答，可以重新提交该问题' : null),
+      );
     } catch (error) {
       setAnswerError(errorMessage(error));
     } finally {
@@ -701,9 +732,11 @@ export function DocumentWorkspace(): ReactElement {
           <div>
             <h2>知识问答</h2>
             <p>
-              {answerModel
-                ? `${answerModel} · ${answerGrounded ? '已引用证据' : '无可用证据'}`
-                : '检索已就绪文档'}
+              {answerStatus && answerStatus !== 'completed'
+                ? answerStatusLabel(answerStatus)
+                : answerModel
+                  ? `${answerModel} · ${answerGrounded ? '已引用证据' : '无可用证据'}`
+                  : '检索已就绪文档'}
             </p>
           </div>
           {answering ? (
@@ -791,7 +824,9 @@ export function DocumentWorkspace(): ReactElement {
             {answer ? (
               <div className="answer-text">{answer}</div>
             ) : (
-              <span className="answer-placeholder">尚未提问</span>
+              <span className="answer-placeholder">
+                {answerStatus ? answerStatusLabel(answerStatus) : '尚未提问'}
+              </span>
             )}
             {answerError ? <p className="answer-error">{answerError}</p> : null}
           </div>
@@ -1150,6 +1185,22 @@ function formatDate(value: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '发生未知错误';
+}
+
+function answerStatusLabel(status: AnswerRunStatus): string {
+  const labels: Record<AnswerRunStatus, string> = {
+    running: '正在生成回答',
+    completed: '回答已完成',
+    failed: '回答生成失败',
+    cancelled: '回答已取消',
+  };
+  return labels[status];
+}
+
+function answerRunMessage(run: ConversationAnswerRun | null): string | null {
+  if (run?.status === 'failed') return '本次回答生成失败，可以重新提交该问题';
+  if (run?.status === 'cancelled') return '本次回答已取消，可以重新提交该问题';
+  return null;
 }
 
 function citationSource(citation: AnswerCitation): string {

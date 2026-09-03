@@ -626,6 +626,10 @@ export const AskQuestionRequestSchema = z.object({
 });
 export type AskQuestionRequest = z.infer<typeof AskQuestionRequestSchema>;
 
+export const answerRunStatuses = ['running', 'completed', 'failed', 'cancelled'] as const;
+export const AnswerRunStatusSchema = z.enum(answerRunStatuses);
+export type AnswerRunStatus = z.infer<typeof AnswerRunStatusSchema>;
+
 export const AnswerCitationSchema = z.object({
   ordinal: z.number().int().positive(),
   chunkId: z.string().uuid(),
@@ -638,6 +642,7 @@ export const AnswerCitationSchema = z.object({
 export type AnswerCitation = z.infer<typeof AnswerCitationSchema>;
 
 export const AskQuestionResponseSchema = z.object({
+  runId: z.string().uuid(),
   conversationId: z.string().uuid(),
   messageId: z.string().uuid(),
   answer: z.string(),
@@ -670,6 +675,17 @@ export const ConversationListResponseSchema = z.object({
 });
 export type ConversationListResponse = z.infer<typeof ConversationListResponseSchema>;
 
+export const ConversationAnswerRunSchema = z.object({
+  id: z.string().uuid(),
+  userMessageId: z.string().uuid(),
+  assistantMessageId: z.string().uuid().nullable(),
+  status: AnswerRunStatusSchema,
+  errorCode: z.string().nullable(),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime().nullable(),
+});
+export type ConversationAnswerRun = z.infer<typeof ConversationAnswerRunSchema>;
+
 export const ConversationMessageSchema = z.object({
   id: z.string().uuid(),
   role: z.enum(['user', 'assistant']),
@@ -677,6 +693,7 @@ export const ConversationMessageSchema = z.object({
   model: z.string().nullable(),
   createdAt: z.string().datetime(),
   citations: z.array(AnswerCitationSchema),
+  answerRun: ConversationAnswerRunSchema.nullable(),
 });
 export type ConversationMessage = z.infer<typeof ConversationMessageSchema>;
 

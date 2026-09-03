@@ -100,7 +100,16 @@ try {
   if (history.messages.length !== 2) {
     throw new Error(`Expected two persisted messages, received ${history.messages.length}`);
   }
+  const userMessage = history.messages.find((message) => message.role === 'user');
   const assistantMessage = history.messages.find((message) => message.role === 'assistant');
+  if (
+    !grounded.runId ||
+    userMessage?.answerRun?.id !== grounded.runId ||
+    userMessage.answerRun.status !== 'completed' ||
+    userMessage.answerRun.assistantMessageId !== assistantMessage?.id
+  ) {
+    throw new Error('Conversation history did not preserve the completed answer run');
+  }
   if (!assistantMessage?.citations.some((citation) => citation.documentId === created.documentId)) {
     throw new Error('Conversation history did not preserve the answer citation');
   }
@@ -129,6 +138,7 @@ try {
         refused: !refused.grounded,
         refusalCitationCount: refused.citations.length,
         conversationHistoryPersisted: true,
+        answerRunPersisted: true,
         conversationDeleteVerified: true,
       },
       null,

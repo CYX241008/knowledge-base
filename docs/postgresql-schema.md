@@ -38,7 +38,7 @@
 | 文档与版本      | `document`、`document_version`、`document_source_anchor`、`document_asset`、`document_chunk`                       |
 | 文档审核        | `document_review_request`、`document_review_action`                                                                |
 | 文档摄取        | `ingestion_job`、`ingestion_stage`、`outbox_event`                                                                 |
-| RAG 会话        | `chat_conversation`、`chat_message`、`chat_citation`                                                               |
+| RAG 会话        | `chat_conversation`、`chat_message`、`answer_run`、`chat_citation`                                                 |
 | 检索与治理      | `search_query_event`、`search_feedback`、`tenant_system_setting`、`audit_event`                                    |
 
 `tenant_id` 是主要的数据隔离字段，但并非每张含 `tenant_id` 的表都建立了数据库外键，详见第 7 节。
@@ -474,6 +474,22 @@ ready | retrying | failed | cancelled`
   `document_title varchar(500)`、`excerpt text`、`source jsonb`、`created_at`
 - 唯一：`(message_id, ordinal)`
 
+#### `answer_run`
+
+- 用途：记录一次用户问题对应的检索与回答生成生命周期。
+- 主键：`id`
+- 外键：`conversation_id -> chat_conversation.id ON DELETE CASCADE`；
+  `user_message_id -> chat_message.id ON DELETE CASCADE`；
+  `assistant_message_id -> chat_message.id`
+- 字段：`id`、`tenant_id`、`conversation_id`、`user_message_id`、
+  `assistant_message_id uuid?`、`status varchar(16)`、`error_code varchar(128)?`、
+  `started_at`、`completed_at?`
+- 唯一：`user_message_id`、`assistant_message_id`
+- 状态：`running | completed | failed | cancelled`
+- 生命周期约束：`running` 不得有关联回答或完成时间；`completed` 必须关联回答并记录完成时间；
+  `failed/cancelled` 不得关联回答且必须记录完成时间；服务层会同时写入错误码。
+- 索引：`(tenant_id, conversation_id, started_at)`、`(tenant_id, status, started_at)`
+
 ### 4.8 检索与系统治理
 
 #### `search_query_event`
@@ -558,6 +574,9 @@ ready | retrying | failed | cancelled`
 | `document` / `document_version`        | `document_review_request`                         | 1:N        | `CASCADE`        |
 | `document_review_request`              | `document_review_action`                          | 1:N        | `CASCADE`        |
 | `chat_conversation`                    | `chat_message`                                    | 1:N        | `CASCADE`        |
+| `chat_conversation`                    | `answer_run`                                      | 1:N        | `CASCADE`        |
+| `chat_message`                         | `answer_run`（用户消息）                          | 1:0..1     | `CASCADE`        |
+| `chat_message`                         | `answer_run`（回答消息）                          | 1:0..1     | `NO ACTION`      |
 | `chat_message`                         | `chat_citation`                                   | 1:N        | `CASCADE`        |
 | `search_query_event`                   | `search_feedback`                                 | 1:N        | `CASCADE`        |
 
@@ -579,7 +598,7 @@ ready | retrying | failed | cancelled`
 1. 早期核心表的 `tenant_id`：
    `document`、`document_version`、`document_source_anchor`、
    `document_asset`、`document_chunk`、`ingestion_job`、`outbox_event`、
-   `chat_conversation`、`chat_message`、`chat_citation`。
+   `chat_conversation`、`chat_message`、`answer_run`、`chat_citation`。
 2. 用户审计字段：
    `document.created_by/updated_by`、各知识组织表的 `created_by`、
    `audit_event.actor_id`、`search_query_event.user_id`、

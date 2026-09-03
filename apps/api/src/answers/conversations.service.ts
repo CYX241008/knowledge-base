@@ -7,6 +7,7 @@ import type {
   DeleteConversationResponse,
 } from '@knowledge-base/contracts';
 import {
+  AnswerRunEntity,
   ChatCitationEntity,
   ChatConversationEntity,
   ChatMessageEntity,
@@ -40,6 +41,10 @@ export class ConversationsService {
       where: { tenantId: auth.tenantId, conversationId },
       order: { createdAt: 'ASC', id: 'ASC' },
     });
+    const answerRuns = await this.dataSource.getRepository(AnswerRunEntity).find({
+      where: { tenantId: auth.tenantId, conversationId },
+      order: { startedAt: 'ASC', id: 'ASC' },
+    });
     const messageIds = messages.map((message) => message.id);
     const citations =
       messageIds.length === 0
@@ -62,16 +67,35 @@ export class ConversationsService {
       });
       citationsByMessage.set(citation.messageId, current);
     }
+    const runsByMessage = new Map<string, (typeof answerRuns)[number]>();
+    for (const run of answerRuns) {
+      runsByMessage.set(run.userMessageId, run);
+      if (run.assistantMessageId) runsByMessage.set(run.assistantMessageId, run);
+    }
     return {
       ...toSummary(conversation),
-      messages: messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        model: message.model,
-        createdAt: message.createdAt.toISOString(),
-        citations: citationsByMessage.get(message.id) ?? [],
-      })),
+      messages: messages.map((message) => {
+        const run = runsByMessage.get(message.id);
+        return {
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          model: message.model,
+          createdAt: message.createdAt.toISOString(),
+          citations: citationsByMessage.get(message.id) ?? [],
+          answerRun: run
+            ? {
+                id: run.id,
+                userMessageId: run.userMessageId,
+                assistantMessageId: run.assistantMessageId,
+                status: run.status,
+                errorCode: run.errorCode,
+                startedAt: run.startedAt.toISOString(),
+                completedAt: run.completedAt?.toISOString() ?? null,
+              }
+            : null,
+        };
+      }),
     };
   }
 

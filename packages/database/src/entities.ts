@@ -2,6 +2,7 @@ import type {
   AccessPermissionKey,
   AccessPermissionScope,
   AccessPrincipalType,
+  AnswerRunStatus,
   DocumentStatus,
   DocumentReviewAction,
   DocumentReviewStatus,
@@ -898,6 +899,38 @@ export class ChatCitationEntity {
   createdAt!: Date;
 }
 
+@Entity('answer_run')
+@Index(['tenantId', 'conversationId', 'startedAt'])
+@Index(['tenantId', 'status', 'startedAt'])
+export class AnswerRunEntity {
+  @PrimaryColumn('uuid')
+  id!: string;
+
+  @Column('uuid', { name: 'tenant_id' })
+  tenantId!: string;
+
+  @Column('uuid', { name: 'conversation_id' })
+  conversationId!: string;
+
+  @Column('uuid', { name: 'user_message_id', unique: true })
+  userMessageId!: string;
+
+  @Column('uuid', { name: 'assistant_message_id', nullable: true, unique: true })
+  assistantMessageId!: string | null;
+
+  @Column('varchar', { length: 16, default: 'running' })
+  status!: AnswerRunStatus;
+
+  @Column('varchar', { name: 'error_code', length: 128, nullable: true })
+  errorCode!: string | null;
+
+  @CreateDateColumn({ name: 'started_at', type: 'timestamptz' })
+  startedAt!: Date;
+
+  @Column('timestamptz', { name: 'completed_at', nullable: true })
+  completedAt!: Date | null;
+}
+
 export type IngestionJobStatus = 'queued' | 'active' | 'completed' | 'failed' | 'cancelled';
 
 @Entity('ingestion_job')
@@ -1074,6 +1107,7 @@ export const databaseEntities = [
   ChatConversationEntity,
   ChatMessageEntity,
   ChatCitationEntity,
+  AnswerRunEntity,
   IngestionJobEntity,
   IngestionStageEntity,
   OutboxEventEntity,
