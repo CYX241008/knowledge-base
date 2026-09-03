@@ -475,6 +475,8 @@ function RuntimeTable({ runtime }: { runtime: SystemRuntimeConfiguration }): Rea
     ['向量模型', runtime.embeddingModel],
     ['对话模型', runtime.chatModel],
     ['重排服务', `${runtime.rerankerProvider} / ${runtime.rerankerModel}`],
+    ['MMR 相关性权重', runtime.mmrLambda.toString()],
+    ['近重复相似度阈值', runtime.nearDuplicateThreshold.toString()],
     ['问答相关性阈值', runtime.ragMinRelevance.toString()],
     ['模型超时', `${runtime.modelRequestTimeoutMs.toLocaleString('zh-CN')} ms`],
     ['请求限额', `${runtime.modelRequestsPerMinute.toLocaleString('zh-CN')} 次/分钟`],

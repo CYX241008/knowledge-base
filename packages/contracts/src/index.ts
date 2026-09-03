@@ -344,6 +344,14 @@ export type SearchDiagnosticsStage = z.infer<typeof SearchDiagnosticsStageSchema
 export const SearchDiagnosticsSchema = z.object({
   candidateLimit: z.number().int().positive(),
   scoreThreshold: z.number().nonnegative(),
+  mmrLambda: z.number().min(0).max(1),
+  nearDuplicateThreshold: z.number().min(0).max(1),
+  consolidation: z.object({
+    exactDuplicatesRemoved: z.number().int().nonnegative(),
+    adjacentChunksMerged: z.number().int().nonnegative(),
+    nonAdjacentDuplicatesRemoved: z.number().int().nonnegative(),
+    crossSourceSimilarPreserved: z.number().int().nonnegative(),
+  }),
   timingsMs: z.object({
     settings: z.number().int().nonnegative(),
     embedding: z.number().int().nonnegative(),
@@ -352,6 +360,8 @@ export const SearchDiagnosticsSchema = z.object({
     fusion: z.number().int().nonnegative(),
     hydration: z.number().int().nonnegative(),
     rerank: z.number().int().nonnegative(),
+    consolidation: z.number().int().nonnegative(),
+    mmr: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
   }),
   stages: z.object({
@@ -359,6 +369,7 @@ export const SearchDiagnosticsSchema = z.object({
     keyword: SearchDiagnosticsStageSchema,
     rrf: SearchDiagnosticsStageSchema,
     reranked: SearchDiagnosticsStageSchema,
+    consolidated: SearchDiagnosticsStageSchema,
     selected: SearchDiagnosticsStageSchema,
   }),
 });
@@ -492,6 +503,8 @@ export const SystemRuntimeConfigurationSchema = z.object({
   chatModel: z.string(),
   rerankerProvider: z.string(),
   rerankerModel: z.string(),
+  mmrLambda: z.number().min(0).max(1),
+  nearDuplicateThreshold: z.number().min(0).max(1),
   modelRequestTimeoutMs: z.number().int().positive(),
   modelRequestsPerMinute: z.number().int().nonnegative(),
   ragMinRelevance: z.number().min(0).max(1),

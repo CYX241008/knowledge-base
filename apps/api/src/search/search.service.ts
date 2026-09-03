@@ -19,7 +19,11 @@ import {
   type ModelGateway,
   type RerankGateway,
 } from '@knowledge-base/model-gateway';
-import { ElasticsearchChunkIndex } from '@knowledge-base/rag';
+import {
+  ElasticsearchChunkIndex,
+  maximalMarginalRelevance,
+  parseVectorLiteral,
+} from '@knowledge-base/rag';
 import { logEvent } from '@knowledge-base/observability';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
@@ -27,6 +31,10 @@ import { ModelMetricsService } from '../observability/model-metrics.service';
 import { modelRuntimeOptions } from '../observability/model-runtime-options';
 import { ModelQuotaService } from '../observability/model-quota.service';
 import { SystemGovernanceService } from '../system-governance/system-governance.service';
+import {
+  consolidateSearchCandidates,
+  type CandidateConsolidationStats,
+} from './candidate-consolidation';
 
 type RankedChunk = { id: string; score: number };
 
@@ -43,6 +51,8 @@ type ChunkRow = {
   chunkId: string;
   documentId: string;
   documentVersionId: string;
+  ordinal: number;
+  contentSha256: string;
   title: string;
   content: string;
   anchorType: SearchDocumentHit['source']['type'];
@@ -57,6 +67,7 @@ type ChunkRow = {
   spaceId: string | null;
   folderId: string | null;
   tagIds: string[];
+  embedding: string | number[];
 };
 
 type GovernanceSummaryRow = {
@@ -117,6 +128,8 @@ export class SearchService {
       fusion: 0,
       hydration: 0,
       rerank: 0,
+      consolidation: 0,
+      mmr: 0,
       total: 0,
     };
     const settingsStartedAt = Date.now();
@@ -131,6 +144,8 @@ export class SearchService {
         };
     timingsMs.settings = Date.now() - settingsStartedAt;
     const candidateLimit = settings.candidateLimit;
+    const mmrLambda = this.config.getOrThrow('RAG_MMR_LAMBDA');
+    const nearDuplicateThreshold = this.config.getOrThrow('RAG_NEAR_DUPLICATE_THRESHOLD');
     let vectorCandidateCount = 0;
     let keywordCandidateCount = 0;
     try {
@@ -211,12 +226,16 @@ export class SearchService {
           response.diagnostics = buildDiagnostics(
             candidateLimit,
             settings.scoreThreshold,
+            mmrLambda,
+            nearDuplicateThreshold,
             timingsMs,
             vectorHits,
             keywordHits,
             [],
             [],
             [],
+            [],
+            emptyConsolidationStats(),
             new Map(),
           );
         }
@@ -242,6 +261,8 @@ export class SearchService {
         SELECT chunk.id AS "chunkId",
                chunk.document_id AS "documentId",
                chunk.document_version_id AS "documentVersionId",
+               chunk.ordinal,
+               chunk.content_sha256 AS "contentSha256",
                document.title,
                chunk.content,
                chunk.anchor_type AS "anchorType",
@@ -253,6 +274,7 @@ export class SearchService {
                chunk.heading,
                chunk.markdown_offset_start AS "offsetStart",
                chunk.markdown_offset_end AS "offsetEnd",
+               chunk.embedding::text AS embedding,
                document.space_id AS "spaceId",
                document.folder_id AS "folderId",
                COALESCE((
@@ -310,7 +332,37 @@ export class SearchService {
           return hit ? { ...hit, score: result.score } : null;
         })
         .filter((hit): hit is SearchDocumentHit => hit !== null);
-      const rankedHits = rerankedHits.filter((hit) => hit.score > settings.scoreThreshold);
+      const relevantHits = rerankedHits.filter((hit) => hit.score > settings.scoreThreshold);
+      const consolidationStartedAt = Date.now();
+      const consolidation = consolidateSearchCandidates(
+        relevantHits.flatMap((hit) => {
+          const row = byId.get(hit.chunkId);
+          return row
+            ? [
+                {
+                  hit,
+                  ordinalStart: row.ordinal,
+                  ordinalEnd: row.ordinal,
+                  contentSha256: row.contentSha256,
+                  embedding: parseVectorLiteral(row.embedding),
+                },
+              ]
+            : [];
+        }),
+        nearDuplicateThreshold,
+      );
+      timingsMs.consolidation = Date.now() - consolidationStartedAt;
+      const mmrStartedAt = Date.now();
+      const rankedHits = maximalMarginalRelevance(
+        consolidation.candidates.map((candidate) => ({
+          id: candidate.hit.chunkId,
+          relevanceScore: candidate.hit.score,
+          embedding: candidate.embedding,
+          hit: candidate.hit,
+        })),
+        { lambda: mmrLambda },
+      ).map((candidate) => candidate.hit);
+      timingsMs.mmr = Date.now() - mmrStartedAt;
       const offset = (input.page - 1) * input.limit;
       const durationMs = Date.now() - startedAt;
       timingsMs.total = durationMs;
@@ -330,12 +382,16 @@ export class SearchService {
         response.diagnostics = buildDiagnostics(
           candidateLimit,
           settings.scoreThreshold,
+          mmrLambda,
+          nearDuplicateThreshold,
           timingsMs,
           vectorHits,
           keywordHits,
           fusedCandidates,
           reranked,
+          consolidation.candidates.map((candidate) => candidate.hit),
           rankedHits,
+          consolidation.stats,
           byId,
         );
       }
@@ -582,12 +638,16 @@ function hydrateRankedHits(
 function buildDiagnostics(
   candidateLimit: number,
   scoreThreshold: number,
+  mmrLambda: number,
+  nearDuplicateThreshold: number,
   timingsMs: SearchDiagnostics['timingsMs'],
   vectorHits: RankedChunk[],
   keywordHits: RankedChunk[],
   fusedHits: RankedChunk[],
   rerankedHits: RankedChunk[],
+  consolidatedHits: SearchDocumentHit[],
   selectedHits: SearchDocumentHit[],
+  consolidation: CandidateConsolidationStats,
   byId: Map<string, ChunkRow>,
 ): SearchDiagnostics {
   const stage = (ranking: RankedChunk[]) => ({
@@ -597,17 +657,33 @@ function buildDiagnostics(
   return {
     candidateLimit,
     scoreThreshold,
+    mmrLambda,
+    nearDuplicateThreshold,
+    consolidation,
     timingsMs: { ...timingsMs },
     stages: {
       vector: stage(vectorHits),
       keyword: stage(keywordHits),
       rrf: stage(fusedHits),
       reranked: stage(rerankedHits),
+      consolidated: {
+        candidateCount: consolidatedHits.length,
+        hits: consolidatedHits,
+      },
       selected: {
         candidateCount: selectedHits.length,
         hits: selectedHits,
       },
     },
+  };
+}
+
+function emptyConsolidationStats(): CandidateConsolidationStats {
+  return {
+    exactDuplicatesRemoved: 0,
+    adjacentChunksMerged: 0,
+    nonAdjacentDuplicatesRemoved: 0,
+    crossSourceSimilarPreserved: 0,
   };
 }
 

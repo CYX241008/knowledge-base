@@ -67,6 +67,8 @@ const ServerEnvSchema = z
     RERANKER_URL: z.string().url().optional(),
     RERANKER_API_KEY: z.string().min(1).optional(),
     RERANKER_MODEL: z.string().trim().min(1).default('local-lexical-v1'),
+    RAG_MMR_LAMBDA: z.coerce.number().min(0).max(1).default(0.7),
+    RAG_NEAR_DUPLICATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.92),
     RAG_MAX_CONTEXT_CHARACTERS: z.coerce.number().int().min(1_000).default(12_000),
     RAG_MIN_RELEVANCE: z.coerce.number().min(0).max(1).default(0.25),
     CHAT_RETENTION_DAYS: z.coerce.number().int().min(1).max(3_650).default(90),

@@ -85,6 +85,8 @@ export class SystemGovernanceService {
         chatModel: this.config.getOrThrow('CHAT_MODEL'),
         rerankerProvider: this.config.getOrThrow('RERANKER_PROVIDER'),
         rerankerModel: this.config.getOrThrow('RERANKER_MODEL'),
+        mmrLambda: this.config.getOrThrow('RAG_MMR_LAMBDA'),
+        nearDuplicateThreshold: this.config.getOrThrow('RAG_NEAR_DUPLICATE_THRESHOLD'),
         modelRequestTimeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
         modelRequestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
         ragMinRelevance: this.config.getOrThrow('RAG_MIN_RELEVANCE'),

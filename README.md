@@ -21,7 +21,7 @@ pnpm dev
 
 处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
 
-检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合后再重排。两个召回查询都会下推租户、有效主体和 `published` 状态过滤，最终只返回逻辑文档当前发布版本。待审新版本不会替换或隐藏旧发布版本。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
+检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合并重排。重排后的候选会按内容哈希删除完全重复项；相邻且高度相似、来源一致的分片会合并；非相邻的高度相似分片只在来源一致时保留高分项，不同来源继续保留。最后使用 MMR 降低重复候选的优先级，不会由 MMR 直接删除候选。整个整理过程在本地复用已有分片向量，不会增加模型调用。`RAG_NEAR_DUPLICATE_THRESHOLD` 控制高度相似判定，默认 `0.92`；`RAG_MMR_LAMBDA` 控制相关性与多样性的权衡，默认 `0.7`。两个召回查询都会下推租户、有效主体和 `published` 状态过滤，最终只返回逻辑文档当前发布版本。待审新版本不会替换或隐藏旧发布版本。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
 
 版本审核绑定不可变的 `document_version`。文档管理员可以提交或撤回待审版本；拥有 `documents.review` 的审核员可以查看租户待办、批准或驳回。批准会在同一 PostgreSQL 事务中结案审核、切换发布版本、记录审计并写入搜索投影 Outbox。
 
@@ -83,7 +83,7 @@ pnpm eval:rag
 ```
 
 评测会记录检索参数与模型快照，输出答案、引用精确率/召回率、分片级
-`Recall@K`/`nDCG@K`、向量/关键词/RRF/重排/阈值筛选阶段命中、分阶段耗时、
+`Recall@K`/`nDCG@K`、向量/关键词/RRF/重排/候选整理/MMR 阶段命中、分阶段耗时、
 P50/P95/P99、模型成本和 95% 置信区间。报告默认写入
 `.tmp/rag-evaluations/`。可重复运行或比较多个候选窗口：
 

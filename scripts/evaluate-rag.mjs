@@ -76,6 +76,8 @@ try {
         candidateLimit: settings.retrieval.candidateLimit,
         searchScoreThreshold: settings.retrieval.scoreThreshold,
         ragMinRelevance: settings.runtime.ragMinRelevance,
+        mmrLambda: settings.runtime.mmrLambda,
+        nearDuplicateThreshold: settings.runtime.nearDuplicateThreshold,
         answerLimit: options.answerLimit,
         embeddingModel: settings.runtime.embeddingModel,
         rerankerProvider: settings.runtime.rerankerProvider,

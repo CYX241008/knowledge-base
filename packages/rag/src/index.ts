@@ -75,6 +75,8 @@ export {
 export { XlsxDocumentParser } from './parsing/xlsx';
 export { DEFAULT_DOCUMENT_CHUNK_INDEX, ElasticsearchChunkIndex } from './retrieval/elasticsearch';
 export type { KeywordIndexedChunk, KeywordSearchHit } from './retrieval/elasticsearch';
+export { maximalMarginalRelevance, parseVectorLiteral } from './retrieval/mmr';
+export type { MmrCandidate, MmrOptions } from './retrieval/mmr';
 export { evaluateRag } from './evaluation';
 export type {
   RagEvaluationCase,

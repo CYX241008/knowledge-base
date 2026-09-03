@@ -44,12 +44,27 @@ export type RagEvaluationRetrievedChunk = {
   source: RagEvaluationSource;
 };
 
-export const RAG_EVALUATION_STAGES = ['vector', 'keyword', 'rrf', 'reranked', 'selected'] as const;
+export const RAG_EVALUATION_STAGES = [
+  'vector',
+  'keyword',
+  'rrf',
+  'reranked',
+  'consolidated',
+  'selected',
+] as const;
 export type RagEvaluationStage = (typeof RAG_EVALUATION_STAGES)[number];
 
 export type RagEvaluationRetrievalDiagnostics = {
   candidateLimit: number;
   scoreThreshold: number;
+  mmrLambda: number;
+  nearDuplicateThreshold: number;
+  consolidation: {
+    exactDuplicatesRemoved: number;
+    adjacentChunksMerged: number;
+    nonAdjacentDuplicatesRemoved: number;
+    crossSourceSimilarPreserved: number;
+  };
   timingsMs: {
     settings: number;
     embedding: number;
@@ -58,6 +73,8 @@ export type RagEvaluationRetrievalDiagnostics = {
     fusion: number;
     hydration: number;
     rerank: number;
+    consolidation: number;
+    mmr: number;
     total: number;
   };
   stages: Record<
@@ -132,6 +149,9 @@ export type RagEvaluationCaseResult = {
   retrieval?: {
     candidateLimit: number;
     scoreThreshold: number;
+    mmrLambda: number;
+    nearDuplicateThreshold: number;
+    consolidation: RagEvaluationRetrievalDiagnostics['consolidation'];
     timingsMs: RagEvaluationRetrievalDiagnostics['timingsMs'];
     stages: Record<RagEvaluationStage, RagEvaluationStageCaseResult>;
   };
@@ -345,6 +365,9 @@ function evaluateCase(
           retrieval: {
             candidateLimit: observation.retrievalDiagnostics.candidateLimit,
             scoreThreshold: observation.retrievalDiagnostics.scoreThreshold,
+            mmrLambda: observation.retrievalDiagnostics.mmrLambda,
+            nearDuplicateThreshold: observation.retrievalDiagnostics.nearDuplicateThreshold,
+            consolidation: observation.retrievalDiagnostics.consolidation,
             timingsMs: observation.retrievalDiagnostics.timingsMs,
             stages: Object.fromEntries(
               RAG_EVALUATION_STAGES.map((stage) => [
@@ -458,6 +481,8 @@ function summarizeRetrieval(
     'fusion',
     'hydration',
     'rerank',
+    'consolidation',
+    'mmr',
     'total',
   ];
   const timingsMs = Object.fromEntries(

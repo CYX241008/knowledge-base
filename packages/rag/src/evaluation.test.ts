@@ -37,6 +37,14 @@ describe('evaluateRag', () => {
     const diagnostics: RagEvaluationRetrievalDiagnostics = {
       candidateLimit: 50,
       scoreThreshold: 0.2,
+      mmrLambda: 0.7,
+      nearDuplicateThreshold: 0.92,
+      consolidation: {
+        exactDuplicatesRemoved: 0,
+        adjacentChunksMerged: 0,
+        nonAdjacentDuplicatesRemoved: 0,
+        crossSourceSimilarPreserved: 0,
+      },
       timingsMs: {
         settings: 1,
         embedding: 2,
@@ -45,10 +53,12 @@ describe('evaluateRag', () => {
         fusion: 1,
         hydration: 2,
         rerank: 5,
+        consolidation: 1,
+        mmr: 1,
         total: 12,
       },
       stages: Object.fromEntries(
-        ['vector', 'keyword', 'rrf', 'reranked', 'selected'].map((stage) => [
+        ['vector', 'keyword', 'rrf', 'reranked', 'consolidated', 'selected'].map((stage) => [
           stage,
           {
             candidateCount: 2,
