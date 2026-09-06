@@ -6,8 +6,10 @@ import {
   Header,
   Inject,
   Param,
+  ParseIntPipe,
   Post,
   Query,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -117,10 +119,16 @@ export class DocumentsController {
   async getMarkdown(
     @Param('documentId') documentId: string,
     @Param('versionId') versionId: string,
+    @Query('preserveOffsets') preserveOffsets: string | undefined,
     @CurrentAuth() auth: AuthContext,
   ): Promise<string> {
     await this.accessControl.assertDocumentRead(auth, documentId);
-    return this.documentsService.getMarkdown(auth.tenantId, documentId, versionId);
+    return this.documentsService.getMarkdown(
+      auth.tenantId,
+      documentId,
+      versionId,
+      preserveOffsets === 'true',
+    );
   }
 
   @Get(':documentId/versions/:versionId/structure')
@@ -133,6 +141,25 @@ export class DocumentsController {
     return buildSuccess(
       await this.documentsService.getStructure(auth.tenantId, documentId, versionId),
     );
+  }
+
+  @Get(':documentId/versions/:versionId/pages/:page/preview')
+  @Header('Content-Type', 'image/png')
+  @Header('Cache-Control', 'private, max-age=300')
+  async getPagePreview(
+    @Param('documentId') documentId: string,
+    @Param('versionId') versionId: string,
+    @Param('page', ParseIntPipe) page: number,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<StreamableFile> {
+    await this.accessControl.assertDocumentRead(auth, documentId);
+    const bytes = await this.documentsService.getPdfPagePreview(
+      auth.tenantId,
+      documentId,
+      versionId,
+      page,
+    );
+    return new StreamableFile(Buffer.from(bytes));
   }
 
   @Get(':documentId')

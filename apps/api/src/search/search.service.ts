@@ -74,8 +74,11 @@ type ChunkRow = {
   documentVersionId: string;
   ordinal: number;
   contentSha256: string;
+  embeddingInputSha256: string;
   title: string;
   content: string;
+  contextualContent: string;
+  contextSummary: string | null;
   anchorType: SearchDocumentHit['source']['type'];
   pageNo: number | null;
   slideNo: number | null;
@@ -83,6 +86,13 @@ type ChunkRow = {
   rowStart: number | null;
   rowEnd: number | null;
   heading: string | null;
+  elementType: string | null;
+  elementIds: string[];
+  sectionPath: string[];
+  tableId: string | null;
+  figureId: string | null;
+  boundingBoxes: Array<{ x: number; y: number; width: number; height: number }>;
+  sourceConfidence: number | null;
   offsetStart: number;
   offsetEnd: number;
   spaceId: string | null;
@@ -323,8 +333,11 @@ export class SearchService {
                chunk.document_version_id AS "documentVersionId",
                chunk.ordinal,
                chunk.content_sha256 AS "contentSha256",
+               chunk.embedding_input_sha256 AS "embeddingInputSha256",
                document.title,
                chunk.content,
+               chunk.contextual_content AS "contextualContent",
+               chunk.context_summary AS "contextSummary",
                chunk.anchor_type AS "anchorType",
                chunk.page_no AS "pageNo",
                chunk.slide_no AS "slideNo",
@@ -332,6 +345,13 @@ export class SearchService {
                chunk.row_start AS "rowStart",
                chunk.row_end AS "rowEnd",
                chunk.heading,
+               chunk.element_type AS "elementType",
+               chunk.element_ids AS "elementIds",
+               chunk.section_path AS "sectionPath",
+               chunk.table_id AS "tableId",
+               chunk.figure_id AS "figureId",
+               chunk.bounding_boxes AS "boundingBoxes",
+               chunk.source_confidence AS "sourceConfidence",
                chunk.markdown_offset_start AS "offsetStart",
                chunk.markdown_offset_end AS "offsetEnd",
                chunk.embedding::text AS embedding,
@@ -383,7 +403,9 @@ export class SearchService {
         input.text,
         hits.flatMap((hit) => {
           const row = byId.get(hit.chunkId);
-          return row ? [{ hit, contentSha256: row.contentSha256 }] : [];
+          return row
+            ? [{ hit, contentSha256: row.embeddingInputSha256 ?? row.contentSha256 }]
+            : [];
         }),
         {
           model: rerankerModel,
@@ -441,7 +463,7 @@ export class SearchService {
                   hit,
                   ordinalStart: row.ordinal,
                   ordinalEnd: row.ordinal,
-                  contentSha256: row.contentSha256,
+                  contentSha256: row.embeddingInputSha256 ?? row.contentSha256,
                   embedding: parseVectorLiteral(row.embedding),
                 },
               ]
@@ -708,31 +730,39 @@ function hydrateRankedHits(
   ranking: RankedChunk[],
   byId: Map<string, ChunkRow>,
 ): SearchDocumentHit[] {
-  return ranking
-    .map((ranked) => {
-      const row = byId.get(ranked.id);
-      if (!row) return null;
-      return {
-        chunkId: row.chunkId,
-        documentId: row.documentId,
-        documentVersionId: row.documentVersionId,
-        title: row.title,
-        content: row.content,
-        score: ranked.score,
-        source: {
-          type: row.anchorType,
-          page: row.pageNo,
-          slide: row.slideNo,
-          sheet: row.sheetName,
-          rowStart: row.rowStart,
-          rowEnd: row.rowEnd,
-          heading: row.heading,
-          offsetStart: row.offsetStart,
-          offsetEnd: row.offsetEnd,
-        },
-      } satisfies SearchDocumentHit;
-    })
-    .filter((hit): hit is SearchDocumentHit => hit !== null);
+  const hits: SearchDocumentHit[] = [];
+  for (const ranked of ranking) {
+    const row = byId.get(ranked.id);
+    if (!row) continue;
+    hits.push({
+      chunkId: row.chunkId,
+      documentId: row.documentId,
+      documentVersionId: row.documentVersionId,
+      title: row.title,
+      content: row.content,
+      context: row.contextSummary,
+      score: ranked.score,
+      source: {
+        type: row.anchorType,
+        page: row.pageNo,
+        slide: row.slideNo,
+        sheet: row.sheetName,
+        rowStart: row.rowStart,
+        rowEnd: row.rowEnd,
+        heading: row.heading,
+        offsetStart: row.offsetStart,
+        offsetEnd: row.offsetEnd,
+        elementType: row.elementType as SearchDocumentHit['source']['elementType'],
+        elementIds: row.elementIds,
+        sectionPath: row.sectionPath,
+        tableId: row.tableId,
+        figureId: row.figureId,
+        boundingBoxes: row.boundingBoxes,
+        confidence: row.sourceConfidence,
+      },
+    });
+  }
+  return hits;
 }
 
 function buildDiagnostics(
@@ -861,7 +891,9 @@ export function prepareRerankCandidates(
       continue;
     }
 
-    const fullText = `${candidate.hit.title}\n${candidate.hit.content}`;
+    const fullText = [candidate.hit.title, candidate.hit.context, candidate.hit.content]
+      .filter(Boolean)
+      .join('\n');
     const fullTokens = countModelTextTokens(options.model, fullText, options.tokenizerEncoding);
     const remainingTokens = options.maxTokens - inputTokens - 4;
     if (remainingTokens <= 0) {

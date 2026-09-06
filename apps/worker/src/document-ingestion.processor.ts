@@ -29,8 +29,9 @@ import { DataSource, Repository } from 'typeorm';
 import { OBJECT_STORAGE } from './worker.constants';
 import { SearchProjectionService } from './search-projection.service';
 import { TesseractPdfOcrService } from './tesseract-pdf-ocr.service';
+import { PdfVisionService } from './pdf-vision.service';
 
-const PROCESSOR_VERSION = 'document-ingestion-v6';
+const PROCESSOR_VERSION = 'document-ingestion-v7';
 
 class IngestionCancelledError extends Error {}
 class StaleIngestionJobError extends Error {}
@@ -57,6 +58,8 @@ export class DocumentIngestionProcessor extends WorkerHost {
     private readonly searchProjection: SearchProjectionService,
     @Inject(TesseractPdfOcrService)
     private readonly pdfOcr: TesseractPdfOcrService,
+    @Inject(PdfVisionService)
+    private readonly pdfVision: PdfVisionService,
   ) {
     super();
     this.parser = new DocumentParserRegistry({
@@ -68,6 +71,12 @@ export class DocumentIngestionProcessor extends WorkerHost {
         ocrMinConfidence: this.config.getOrThrow('PDF_OCR_MIN_CONFIDENCE'),
         nativeTextMinCharacters: this.config.getOrThrow('PDF_NATIVE_TEXT_MIN_CHARACTERS'),
         headerFooterMinPageRatio: this.config.getOrThrow('PDF_HEADER_FOOTER_MIN_PAGE_RATIO'),
+        visionEngine: this.pdfVision.enabled ? this.pdfVision : undefined,
+        visionMaxImages: this.config.getOrThrow('PDF_VISION_MAX_IMAGES'),
+        visionMinPixels: this.config.getOrThrow('PDF_VISION_MIN_PIXELS'),
+        visionTimeoutMs: this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
+        visionRequiredForMixedPages: this.config.getOrThrow('PDF_VISION_REQUIRED_FOR_MIXED_PAGES'),
+        qualityMinScore: this.config.getOrThrow('PDF_QUALITY_MIN_SCORE'),
       },
     });
   }
@@ -123,6 +132,8 @@ export class DocumentIngestionProcessor extends WorkerHost {
         filename: data.sourceFilename,
         mimeType: data.mimeType,
         bytes,
+        tenantId: data.tenantId,
+        documentVersionId: data.documentVersionId,
       });
       await this.assertRunnable(data);
       const parsedChecksum = checksumParsedDocument(parsed);
@@ -514,6 +525,9 @@ export class DocumentIngestionProcessor extends WorkerHost {
       lockedVersion.structureBucket = structureBytes ? this.storage.bucket : null;
       lockedVersion.structureObjectKey = structureBytes ? structureKey : null;
       lockedVersion.structureSha256 = structureSha256;
+      lockedVersion.qualityStatus = parsed.structure?.quality.status ?? null;
+      lockedVersion.qualityScore = parsed.structure?.quality.score ?? null;
+      lockedVersion.qualityReasons = parsed.structure?.quality.reasons ?? null;
       lockedVersion.parserName = parsed.parserName;
       lockedVersion.parserVersion = parsed.parserVersion;
       lockedVersion.wordCount = countWords(normalizedMarkdown);

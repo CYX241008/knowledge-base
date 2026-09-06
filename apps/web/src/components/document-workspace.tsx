@@ -16,6 +16,7 @@ import {
   RefreshCw,
   RotateCcw,
   Send,
+  ShieldAlert,
   Square,
   Trash2,
   UploadCloud,
@@ -55,7 +56,11 @@ type DocumentVersion = {
   id: string;
   versionNo: number;
   sourceFilename: string;
+  mimeType: string;
   ingestionStatus: string;
+  qualityStatus: 'pass' | 'review' | null;
+  qualityScore: number | null;
+  qualityReasons: string[] | null;
 };
 
 type UploadResponse = {
@@ -90,6 +95,14 @@ type AnswerCitation = {
     slide: number | null;
     sheet: string | null;
     heading: string | null;
+    offsetStart: number;
+    offsetEnd: number;
+    elementType?: string | null;
+    sectionPath?: string[];
+    tableId?: string | null;
+    figureId?: string | null;
+    boundingBoxes?: Array<{ x: number; y: number; width: number; height: number }>;
+    confidence?: number | null;
   };
 };
 
@@ -172,10 +185,14 @@ export function DocumentWorkspace(): ReactElement {
   const tenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID ?? defaultTenantId;
   const inputRef = useRef<HTMLInputElement>(null);
   const answerAbortRef = useRef<AbortController | null>(null);
+  const pdfPreviewUrlRef = useRef<string | null>(null);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<DocumentVersion | null>(null);
   const [markdown, setMarkdown] = useState('');
+  const [citationFocus, setCitationFocus] = useState<AnswerCitation | null>(null);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [loadingPdfPreview, setLoadingPdfPreview] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [loadingDocuments, setLoadingDocuments] = useState(true);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -200,39 +217,63 @@ export function DocumentWorkspace(): ReactElement {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationBusy, setConversationBusy] = useState(false);
 
+  const replacePdfPreviewUrl = useCallback((value: string | null) => {
+    if (pdfPreviewUrlRef.current) URL.revokeObjectURL(pdfPreviewUrlRef.current);
+    pdfPreviewUrlRef.current = value;
+    setPdfPreviewUrl(value);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (pdfPreviewUrlRef.current) URL.revokeObjectURL(pdfPreviewUrlRef.current);
+    },
+    [],
+  );
+
   const loadDocument = useCallback(
-    async (documentId: string): Promise<void> => {
+    async (
+      documentId: string,
+      preferredVersionId?: string,
+      preserveCitation = false,
+    ): Promise<DocumentVersion | null> => {
       setSelectedDocumentId(documentId);
       setLoadingPreview(true);
       setPageError(null);
+      if (!preserveCitation) {
+        setCitationFocus(null);
+        replacePdfPreviewUrl(null);
+      }
       try {
         const detail = await requestApi<{
           document: DocumentRecord;
           versions: DocumentVersion[];
         }>(`${apiBase}/documents/${documentId}?tenantId=${tenantId}`);
         const version =
+          detail.versions.find((item) => item.id === preferredVersionId) ??
           detail.versions.find((item) => item.id === detail.document.currentReadyVersionId) ??
           detail.versions.find((item) => item.ingestionStatus === 'ready') ??
           null;
         setSelectedVersion(version);
         if (!version) {
           setMarkdown('');
-          return;
+          return null;
         }
         const response = await fetch(
-          `${apiBase}/documents/${documentId}/versions/${version.id}/markdown?tenantId=${tenantId}`,
+          `${apiBase}/documents/${documentId}/versions/${version.id}/markdown?tenantId=${tenantId}&preserveOffsets=true`,
         );
         if (!response.ok) throw new Error('Markdown 内容读取失败');
         setMarkdown(await response.text());
+        return version;
       } catch (error) {
         setMarkdown('');
         setSelectedVersion(null);
         setPageError(errorMessage(error));
+        return null;
       } finally {
         setLoadingPreview(false);
       }
     },
-    [apiBase, tenantId],
+    [apiBase, replacePdfPreviewUrl, tenantId],
   );
 
   const refreshDocuments = useCallback(
@@ -490,6 +531,29 @@ export function DocumentWorkspace(): ReactElement {
     }
   }
 
+  async function submitSelectedVersionForReview(): Promise<void> {
+    if (!selectedDocumentId || !selectedVersion || actionBusy) return;
+    setActionBusy(true);
+    setPageError(null);
+    try {
+      await requestApi(
+        `${apiBase}/documents/${selectedDocumentId}/versions/${selectedVersion.id}/reviews`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            comment: (selectedVersion.qualityReasons ?? []).join('; ') || '解析质量人工复核',
+          }),
+        },
+      );
+      await refreshDocuments(selectedDocumentId);
+    } catch (error) {
+      setPageError(errorMessage(error));
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   async function deleteSelectedDocument(): Promise<void> {
     if (!selectedDocumentId || actionBusy) return;
     if (!window.confirm('确定删除该文档及其所有版本吗？')) return;
@@ -679,8 +743,30 @@ export function DocumentWorkspace(): ReactElement {
   }
 
   async function openCitation(citation: AnswerCitation): Promise<void> {
-    await loadDocument(citation.documentId);
-    document.getElementById('preview')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setCitationFocus(citation);
+    replacePdfPreviewUrl(null);
+    const version = await loadDocument(citation.documentId, citation.documentVersionId, true);
+    let previewLoaded = false;
+    if (version?.mimeType === 'application/pdf' && citation.source.page) {
+      setLoadingPdfPreview(true);
+      try {
+        const response = await fetch(
+          `${apiBase}/documents/${citation.documentId}/versions/${citation.documentVersionId}/pages/${citation.source.page}/preview`,
+        );
+        if (!response.ok) throw new Error('PDF 页面预览读取失败');
+        replacePdfPreviewUrl(URL.createObjectURL(await response.blob()));
+        previewLoaded = true;
+      } catch (error) {
+        setPageError(errorMessage(error));
+      } finally {
+        setLoadingPdfPreview(false);
+      }
+    }
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById(previewLoaded ? 'preview' : 'citation-highlight')
+        ?.scrollIntoView({ behavior: 'smooth', block: previewLoaded ? 'start' : 'center' });
+    });
   }
 
   return (
@@ -988,9 +1074,26 @@ export function DocumentWorkspace(): ReactElement {
                 ? `${selectedVersion.sourceFilename} · v${selectedVersion.versionNo}`
                 : '选择已就绪文档'}
             </p>
+            {selectedVersion?.qualityStatus ? (
+              <span className={`quality-badge ${selectedVersion.qualityStatus}`}>
+                解析质量 {selectedVersion.qualityScore ?? 0} ·{' '}
+                {selectedVersion.qualityStatus === 'pass' ? '通过' : '需复核'}
+              </span>
+            ) : null}
           </div>
           <div className="preview-actions">
+            {selectedVersion?.qualityStatus === 'review' &&
+            selectedDocument?.allowedPermissions.includes('documents.manage') ? (
+              <Button
+                variant="secondary"
+                disabled={actionBusy}
+                onClick={() => void submitSelectedVersionForReview()}
+              >
+                <ShieldAlert size={15} /> 提交复核
+              </Button>
+            ) : null}
             {selectedVersion &&
+            selectedVersion.qualityStatus !== 'review' &&
             selectedDocument?.allowedPermissions.includes('documents.manage') &&
             auth.hasPermission('documents.review') ? (
               <Button
@@ -1027,11 +1130,47 @@ export function DocumentWorkspace(): ReactElement {
             </button>
           </div>
         </div>
+        {selectedVersion?.qualityStatus === 'review' ? (
+          <div className="quality-warning">
+            {(selectedVersion.qualityReasons ?? ['解析质量需要人工复核']).join('；')}
+          </div>
+        ) : null}
         <div className="markdown-preview">
           {loadingPreview ? (
             <span className="preview-placeholder">正在读取 Markdown</span>
           ) : markdown ? (
-            <pre>{markdown}</pre>
+            <>
+              {citationFocus?.source.page && (pdfPreviewUrl || loadingPdfPreview) ? (
+                <div className="citation-page">
+                  <div className="citation-page-heading">
+                    第 {citationFocus.source.page} 页
+                    {citationFocus.source.sectionPath?.length
+                      ? ` · ${citationFocus.source.sectionPath.join(' / ')}`
+                      : ''}
+                  </div>
+                  {loadingPdfPreview ? (
+                    <span className="preview-placeholder">正在渲染引用页面</span>
+                  ) : pdfPreviewUrl ? (
+                    <div className="citation-page-canvas">
+                      <img alt={`PDF 第 ${citationFocus.source.page} 页`} src={pdfPreviewUrl} />
+                      {(citationFocus.source.boundingBoxes ?? []).map((box, index) => (
+                        <span
+                          className="citation-box"
+                          key={`${box.x}-${box.y}-${index}`}
+                          style={{
+                            left: `${box.x * 100}%`,
+                            top: `${box.y * 100}%`,
+                            width: `${box.width * 100}%`,
+                            height: `${box.height * 100}%`,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <HighlightedMarkdown citation={citationFocus} markdown={markdown} />
+            </>
           ) : (
             <span className="preview-placeholder">暂无可预览内容</span>
           )}
@@ -1204,10 +1343,31 @@ function answerRunMessage(run: ConversationAnswerRun | null): string | null {
 }
 
 function citationSource(citation: AnswerCitation): string {
-  if (citation.source.page) return `第 ${citation.source.page} 页`;
+  const section = citation.source.sectionPath?.at(-1) ?? citation.source.heading;
+  if (citation.source.page) return `第 ${citation.source.page} 页${section ? ` · ${section}` : ''}`;
   if (citation.source.slide) return `第 ${citation.source.slide} 张幻灯片`;
   if (citation.source.sheet) return `工作表 ${citation.source.sheet}`;
   return citation.source.heading ?? '文档正文';
+}
+
+function HighlightedMarkdown({
+  citation,
+  markdown,
+}: {
+  citation: AnswerCitation | null;
+  markdown: string;
+}): ReactElement {
+  if (!citation) return <pre>{markdown}</pre>;
+  const start = Math.max(0, Math.min(markdown.length, citation.source.offsetStart));
+  const end = Math.max(start, Math.min(markdown.length, citation.source.offsetEnd));
+  if (end <= start) return <pre>{markdown}</pre>;
+  return (
+    <pre>
+      {markdown.slice(0, start)}
+      <mark id="citation-highlight">{markdown.slice(start, end)}</mark>
+      {markdown.slice(end)}
+    </pre>
+  );
 }
 
 function delay(milliseconds: number): Promise<void> {

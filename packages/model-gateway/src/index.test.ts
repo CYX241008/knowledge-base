@@ -117,6 +117,40 @@ describe('OpenAICompatibleModelGateway', () => {
     });
   });
 
+  it('sends base64 image input and returns vision text', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        choices: [{ message: { content: '{"kind":"chart","description":"Revenue increased"}' } }],
+        usage: { prompt_tokens: 50, completion_tokens: 8, total_tokens: 58 },
+      }),
+    );
+    const gateway = new OpenAICompatibleModelGateway({
+      baseUrl: 'https://models.example/v1',
+      apiKey: 'secret',
+      fetcher,
+    });
+
+    await expect(
+      gateway.analyzeImage({
+        model: 'vision-model',
+        prompt: 'Describe the chart',
+        image: {
+          bytes: new Uint8Array([1, 2, 3]),
+          mimeType: 'image/png',
+          width: 640,
+          height: 480,
+          detail: 'high',
+        },
+        maxOutputTokens: 200,
+      }),
+    ).resolves.toContain('Revenue increased');
+
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)) as {
+      messages: Array<{ content: Array<{ type: string; image_url?: { url: string } }> }>;
+    };
+    expect(body.messages[0]?.content[1]?.image_url?.url).toBe('data:image/png;base64,AQID');
+  });
+
   it('retries transient responses before reporting one successful call', async () => {
     const metrics: ModelCallMetric[] = [];
     const fetcher = vi

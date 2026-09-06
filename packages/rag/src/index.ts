@@ -9,9 +9,13 @@ export type SourceAnchor = {
   offsetStart: number;
   offsetEnd: number;
   elementId?: string;
+  elementIds?: string[];
   elementType?: import('./structured-document').StructuredElementKind;
   sectionPath?: string[];
   tableId?: string;
+  figureId?: string;
+  boundingBoxes?: import('./structured-document').BoundingBox[];
+  confidence?: number;
 };
 export type RetrievedChunk = {
   id: string;
@@ -53,7 +57,13 @@ export type ParseResult = {
   structure?: import('./structured-document').StructuredDocument;
 };
 
-export type ParseInput = { filename: string; mimeType: string; bytes: Uint8Array };
+export type ParseInput = {
+  filename: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  tenantId?: string;
+  documentVersionId?: string;
+};
 
 export interface DocumentParser {
   readonly name: string;
@@ -79,6 +89,7 @@ export { assetReference, toMarkdownTable } from './parsing/parser-utils';
 export { DocxDocumentParser } from './parsing/docx';
 export { DocumentParserRegistry } from './parsing/document-parser-registry';
 export { PdfDocumentParser } from './parsing/pdf';
+export { renderPdfPagePng } from './parsing/pdf-preview';
 export { PptxDocumentParser } from './parsing/pptx';
 export {
   PlainTextDocumentParser,
@@ -105,11 +116,17 @@ export type {
 } from './evaluation';
 export type {
   BoundingBox,
+  DocumentQualityReport,
+  DocumentQualityStatus,
   PdfOcrBlock,
   PdfOcrEngine,
   PdfOcrInput,
   PdfOcrResult,
   PdfPageClassification,
+  PdfVisionEngine,
+  PdfVisionInput,
+  PdfVisionKind,
+  PdfVisionResult,
   StructuredDocument,
   StructuredDocumentElement,
   StructuredDocumentPage,

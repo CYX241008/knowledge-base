@@ -95,6 +95,16 @@ const ServerEnvSchema = z
     PDF_OCR_MIN_CONFIDENCE: z.coerce.number().min(0).max(100).default(40),
     PDF_NATIVE_TEXT_MIN_CHARACTERS: z.coerce.number().int().min(1).default(40),
     PDF_HEADER_FOOTER_MIN_PAGE_RATIO: z.coerce.number().min(0.5).max(1).default(0.6),
+    PDF_VISION_PROVIDER: z.enum(['disabled', 'openai-compatible']).default('disabled'),
+    PDF_VISION_MODEL: z.string().trim().min(1).default('gpt-4.1-mini'),
+    PDF_VISION_MAX_IMAGES: z.coerce.number().int().min(0).max(500).default(50),
+    PDF_VISION_MIN_PIXELS: z.coerce.number().int().min(1).default(40_000),
+    PDF_VISION_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(90_000),
+    PDF_VISION_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(4_096).default(300),
+    PDF_VISION_DETAIL: z.enum(['low', 'high', 'auto']).default('high'),
+    PDF_VISION_REQUIRED_FOR_MIXED_PAGES: booleanFromEnv.default(false),
+    PDF_QUALITY_MIN_SCORE: z.coerce.number().int().min(0).max(100).default(75),
+    RAG_CONTEXTUAL_RETRIEVAL_ENABLED: booleanFromEnv.default(true),
     CHAT_MODEL: z.string().trim().min(1).default('local-extractive-v1'),
     CHAT_FALLBACK_MODEL: z.string().trim().min(1).optional(),
     CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(128_000).default(1_500),
@@ -195,7 +205,10 @@ const ServerEnvSchema = z
         message: 'Current document_chunk schema requires 384 dimensions',
       });
     }
-    if (env.MODEL_PROVIDER === 'openai-compatible') {
+    if (
+      env.MODEL_PROVIDER === 'openai-compatible' ||
+      env.PDF_VISION_PROVIDER === 'openai-compatible'
+    ) {
       for (const key of ['MODEL_BASE_URL', 'MODEL_API_KEY'] as const) {
         if (!env[key]) {
           context.addIssue({ code: 'custom', path: [key], message: `${key} is required` });

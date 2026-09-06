@@ -61,6 +61,7 @@ describe('ElasticsearchChunkIndex', () => {
         tagIds: [],
         title: 'Published document',
         content: 'Published content',
+        contextSummary: 'document_title: Published document',
         anchor: { type: 'document', offsetStart: 0, offsetEnd: 17 },
       },
     ]);

@@ -275,6 +275,9 @@ export const DocumentReviewItemSchema = z.object({
   documentTitle: z.string(),
   versionNo: z.number().int().positive(),
   sourceFilename: z.string(),
+  qualityStatus: z.enum(['pass', 'review']).nullable(),
+  qualityScore: z.number().int().min(0).max(100).nullable(),
+  qualityReasons: z.array(z.string()).nullable(),
   status: DocumentReviewStatusSchema,
   submittedBy: z.string().uuid(),
   submittedByName: z.string().nullable(),
@@ -326,6 +329,14 @@ export const SearchDocumentsRequestSchema = z.object({
 });
 export type SearchDocumentsRequest = z.infer<typeof SearchDocumentsRequestSchema>;
 
+export const BoundingBoxSchema = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  width: z.number().min(0).max(1),
+  height: z.number().min(0).max(1),
+});
+export type BoundingBox = z.infer<typeof BoundingBoxSchema>;
+
 export const SearchSourceSchema = z.object({
   type: z.enum(['document', 'heading', 'page', 'slide', 'sheet']),
   page: z.number().int().positive().nullable(),
@@ -336,6 +347,16 @@ export const SearchSourceSchema = z.object({
   heading: z.string().nullable(),
   offsetStart: z.number().int().nonnegative(),
   offsetEnd: z.number().int().nonnegative(),
+  elementType: z
+    .enum(['heading', 'paragraph', 'table', 'figure', 'caption', 'header', 'footer'])
+    .nullable()
+    .optional(),
+  elementIds: z.array(z.string()).optional(),
+  sectionPath: z.array(z.string()).optional(),
+  tableId: z.string().nullable().optional(),
+  figureId: z.string().nullable().optional(),
+  boundingBoxes: z.array(BoundingBoxSchema).optional(),
+  confidence: z.number().min(0).max(100).nullable().optional(),
 });
 export type SearchSource = z.infer<typeof SearchSourceSchema>;
 
@@ -345,6 +366,7 @@ export const SearchDocumentHitSchema = z.object({
   documentVersionId: z.string().uuid(),
   title: z.string(),
   content: z.string(),
+  context: z.string().nullable().optional(),
   score: z.number(),
   source: SearchSourceSchema,
 });

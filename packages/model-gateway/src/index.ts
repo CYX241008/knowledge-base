@@ -63,9 +63,25 @@ export type StreamChatRequest = {
   context?: ModelCallContext;
 };
 
+export type AnalyzeImageRequest = {
+  model: string;
+  prompt: string;
+  image: {
+    bytes: Uint8Array;
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+    width?: number;
+    height?: number;
+    detail?: 'low' | 'high' | 'auto';
+  };
+  maxOutputTokens?: number;
+  signal?: AbortSignal;
+  context?: ModelCallContext;
+};
+
 export interface ModelGateway {
   embed(request: EmbeddingRequest): Promise<number[][]>;
   streamChat(request: StreamChatRequest): AsyncIterable<string>;
+  analyzeImage(request: AnalyzeImageRequest): Promise<string>;
 }
 
 export type RerankRequest = {
@@ -421,6 +437,86 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
     }
   }
 
+  async analyzeImage(request: AnalyzeImageRequest): Promise<string> {
+    const estimatedInputTokens =
+      countModelTextTokens(request.model, request.prompt, this.options.tokenizerEncoding) +
+      estimateImageTokens(request.image.width, request.image.height);
+    const scope = await this.resilience.open({
+      operation: 'chat',
+      model: request.model,
+      signal: request.signal,
+      inputCharacters: request.prompt.length,
+      estimatedInputTokens,
+      maxOutputTokens: Math.max(0, Math.floor(request.maxOutputTokens ?? 0)),
+      requestContext: request.context,
+    });
+    let outputText = '';
+    let usage: ModelTokenUsage | undefined;
+    try {
+      const imageUrl = `data:${request.image.mimeType};base64,${Buffer.from(request.image.bytes).toString('base64')}`;
+      const response = await scope.retry(() =>
+        this.request(
+          '/chat/completions',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              model: request.model,
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: request.prompt },
+                    {
+                      type: 'image_url',
+                      image_url: {
+                        url: imageUrl,
+                        detail: request.image.detail ?? 'high',
+                      },
+                    },
+                  ],
+                },
+              ],
+              stream: false,
+              ...(request.maxOutputTokens === undefined
+                ? {}
+                : { max_tokens: request.maxOutputTokens }),
+            }),
+          },
+          request.signal,
+        ),
+      );
+      const payload = (await response.json()) as {
+        choices?: Array<{
+          message?: {
+            content?: string | Array<{ type?: string; text?: string }>;
+          };
+        }>;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          total_tokens?: number;
+        };
+      };
+      outputText = chatMessageText(payload.choices?.[0]?.message?.content);
+      usage = normalizeUsage(payload.usage);
+      if (!outputText) throw new Error('Vision model returned no text');
+      await scope.succeed(
+        usage,
+        outputText.length,
+        countModelTextTokens(request.model, outputText, this.options.tokenizerEncoding),
+      );
+      return outputText;
+    } catch (error) {
+      await scope.fail(
+        error,
+        outputText.length,
+        usage,
+        countModelTextTokens(request.model, outputText, this.options.tokenizerEncoding),
+      );
+      throw error;
+    }
+  }
+
   private async request(
     path: string,
     init: RequestInit,
@@ -711,6 +807,52 @@ export function createChatGateway(
     includeUsage: options.includeUsage,
     onMetric: options.onMetric,
   });
+}
+
+export function createVisionGateway(
+  options: EmbeddingGatewayFactoryOptions,
+): Pick<ModelGateway, 'analyzeImage'> | null {
+  if (options.provider === 'local') return null;
+  if (!options.baseUrl || !options.apiKey)
+    throw new Error('OpenAI-compatible vision gateway requires baseUrl and apiKey');
+  return new OpenAICompatibleModelGateway({
+    baseUrl: options.baseUrl,
+    apiKey: options.apiKey,
+    dimensions: options.dimensions,
+    timeoutMs: options.timeoutMs,
+    maxConcurrency: options.maxConcurrency,
+    maxQueueSize: options.maxQueueSize,
+    requestsPerMinute: options.requestsPerMinute,
+    tokenRateLimits: options.tokenRateLimits,
+    tokenizerEncoding: options.tokenizerEncoding,
+    rateLimiter: options.rateLimiter,
+    maxRetries: options.maxRetries,
+    retryBaseDelayMs: options.retryBaseDelayMs,
+    circuitBreaker: options.circuitBreaker,
+    circuitFailureThreshold: options.circuitFailureThreshold,
+    circuitResetMs: options.circuitResetMs,
+    circuitHalfOpenMaxRequests: options.circuitHalfOpenMaxRequests,
+    circuitHalfOpenSuccessThreshold: options.circuitHalfOpenSuccessThreshold,
+    circuitHalfOpenProbeTimeoutMs: options.circuitHalfOpenProbeTimeoutMs,
+    includeUsage: options.includeUsage,
+    onMetric: options.onMetric,
+  });
+}
+
+function chatMessageText(
+  content: string | Array<{ type?: string; text?: string }> | null | undefined,
+): string {
+  if (typeof content === 'string') return content.trim();
+  return (content ?? [])
+    .filter((item) => item.type === 'text' && item.text)
+    .map((item) => item.text)
+    .join('\n')
+    .trim();
+}
+
+function estimateImageTokens(width?: number, height?: number): number {
+  if (!width || !height) return 1_024;
+  return Math.max(256, Math.ceil(width / 512) * Math.ceil(height / 512) * 170 + 85);
 }
 
 function parseChatEvent(event: string): {

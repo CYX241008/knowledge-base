@@ -55,6 +55,7 @@ describe('consolidateSearchCandidates', () => {
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]?.hit.content).toBe('abcdefghijKLMN');
     expect(result.candidates[0]?.hit.source).toMatchObject({ offsetStart: 0, offsetEnd: 14 });
+    expect(result.candidates[0]?.hit.source.elementIds).toEqual([]);
     expect(result.stats.adjacentChunksMerged).toBe(1);
   });
 

@@ -113,12 +113,27 @@ export class SearchProjectionService {
   async buildChunks(input: BuildChunksInput): Promise<{ count: number; checksum: string }> {
     const dimensions = this.config.getOrThrow('EMBEDDING_DIMENSIONS');
     const tokenizerEncoding = this.config.getOrThrow('MODEL_TOKENIZER_ENCODING');
-    const chunks = chunkMarkdown(input.version.id, input.markdown, input.anchors, {
+    const rawChunks = chunkMarkdown(input.version.id, input.markdown, input.anchors, {
       structure: input.structure,
-    }).map((chunk) => ({
-      ...chunk,
-      tokenCount: countModelTextTokens(this.embeddingModel, chunk.content, tokenizerEncoding),
-    }));
+    });
+    const chunks = rawChunks.map((chunk) => {
+      const contextSummary = buildChunkContext(input.document.title, chunk.anchor);
+      const contextualContent = this.config.getOrThrow('RAG_CONTEXTUAL_RETRIEVAL_ENABLED')
+        ? `${contextSummary}\n\n${chunk.content}`
+        : chunk.content;
+      return {
+        ...chunk,
+        contextSummary,
+        contextualContent,
+        embeddingInputSha256: createHash('sha256').update(contextualContent).digest('hex'),
+        embeddingTokenCount: countModelTextTokens(
+          this.embeddingModel,
+          contextualContent,
+          tokenizerEncoding,
+        ),
+        tokenCount: countModelTextTokens(this.embeddingModel, chunk.content, tokenizerEncoding),
+      };
+    });
     if (chunks.length === 0) throw new Error('Normalized Markdown produced no searchable chunks');
     if (chunks.length > this.config.getOrThrow('DOCUMENT_MAX_CHUNKS')) {
       throw new Error(
@@ -126,15 +141,27 @@ export class SearchProjectionService {
       );
     }
 
-    const uniqueChunks = [
-      ...new Map(chunks.map((chunk) => [chunk.contentSha256, chunk] as const)).values(),
+    const uniqueEmbeddingInputs = [
+      ...new Map(
+        chunks.map(
+          (chunk) =>
+            [
+              chunk.embeddingInputSha256,
+              {
+                content: chunk.contextualContent,
+                contentSha256: chunk.embeddingInputSha256,
+                tokenCount: chunk.embeddingTokenCount,
+              },
+            ] as const,
+        ),
+      ).values(),
     ];
     const cached = await this.embeddingCacheRepository.find({
       where: {
         tenantId: input.document.tenantId,
         embeddingModel: this.embeddingModel,
         dimensions,
-        contentSha256: In(uniqueChunks.map((chunk) => chunk.contentSha256)),
+        contentSha256: In(uniqueEmbeddingInputs.map((chunk) => chunk.contentSha256)),
       },
     });
     const vectorsByHash = new Map(
@@ -142,7 +169,9 @@ export class SearchProjectionService {
         .filter((entry) => entry.embedding.length === dimensions)
         .map((entry) => [entry.contentSha256.trim(), entry.embedding] as const),
     );
-    const missingChunks = uniqueChunks.filter((chunk) => !vectorsByHash.has(chunk.contentSha256));
+    const missingChunks = uniqueEmbeddingInputs.filter(
+      (chunk) => !vectorsByHash.has(chunk.contentSha256),
+    );
     const batches = buildEmbeddingBatches(
       missingChunks,
       this.config.getOrThrow('EMBEDDING_BATCH_MAX_INPUTS'),
@@ -190,7 +219,7 @@ export class SearchProjectionService {
     const principalIds = input.document.accessPrincipalIds;
     if (principalIds.length === 0) throw new Error('Document has no access principals');
     const records = chunks.map((chunk) => {
-      const vector = vectorsByHash.get(chunk.contentSha256);
+      const vector = vectorsByHash.get(chunk.embeddingInputSha256);
       if (!vector) throw new Error(`Embedding missing for chunk ${chunk.id}`);
       return this.chunkRepository.create({
         id: chunk.id,
@@ -199,7 +228,9 @@ export class SearchProjectionService {
         documentVersionId: input.version.id,
         ordinal: chunk.ordinal,
         content: chunk.content,
+        contextualContent: chunk.contextualContent,
         contentSha256: chunk.contentSha256,
+        embeddingInputSha256: chunk.embeddingInputSha256,
         tokenCount: chunk.tokenCount,
         anchorType: chunk.anchor.type,
         pageNo: chunk.anchor.page ?? null,
@@ -208,6 +239,15 @@ export class SearchProjectionService {
         rowStart: chunk.anchor.rowStart ?? null,
         rowEnd: chunk.anchor.rowEnd ?? null,
         heading: chunk.anchor.heading ?? null,
+        elementType: chunk.anchor.elementType ?? null,
+        elementIds:
+          chunk.anchor.elementIds ?? (chunk.anchor.elementId ? [chunk.anchor.elementId] : []),
+        sectionPath: chunk.anchor.sectionPath ?? [],
+        tableId: chunk.anchor.tableId ?? null,
+        figureId: chunk.anchor.figureId ?? null,
+        boundingBoxes: chunk.anchor.boundingBoxes ?? [],
+        sourceConfidence: chunk.anchor.confidence ?? null,
+        contextSummary: chunk.contextSummary ?? '',
         markdownOffsetStart: chunk.offsetStart,
         markdownOffsetEnd: chunk.offsetEnd,
         principalIds,
@@ -228,7 +268,9 @@ export class SearchProjectionService {
           this.embeddingModel,
           String(dimensions),
           CHUNKER_VERSION,
-          ...chunks.map((chunk) => `${chunk.id}:${chunk.contentSha256}`),
+          ...chunks.map(
+            (chunk) => `${chunk.id}:${chunk.contentSha256}:${chunk.embeddingInputSha256}`,
+          ),
         ].join('\n'),
       )
       .digest('hex');
@@ -269,6 +311,7 @@ export class SearchProjectionService {
         tagIds,
         title: document.title,
         content: chunk.content,
+        contextSummary: chunk.contextSummary ?? '',
         anchor: entityAnchor(chunk),
       })),
     );
@@ -379,9 +422,30 @@ function entityAnchor(chunk: DocumentChunkEntity): SourceAnchor {
     rowStart: chunk.rowStart ?? undefined,
     rowEnd: chunk.rowEnd ?? undefined,
     heading: chunk.heading ?? undefined,
+    elementId: chunk.elementIds[0],
+    elementIds: chunk.elementIds,
+    elementType: chunk.elementType as SourceAnchor['elementType'],
+    sectionPath: chunk.sectionPath,
+    tableId: chunk.tableId ?? undefined,
+    figureId: chunk.figureId ?? undefined,
+    boundingBoxes: chunk.boundingBoxes,
+    confidence: chunk.sourceConfidence ?? undefined,
     offsetStart: chunk.markdownOffsetStart,
     offsetEnd: chunk.markdownOffsetEnd,
   };
+}
+
+function buildChunkContext(title: string, anchor: SourceAnchor): string {
+  const fields = [`document_title: ${title}`];
+  if (anchor.page) fields.push(`page: ${anchor.page}`);
+  if (anchor.slide) fields.push(`slide: ${anchor.slide}`);
+  if (anchor.sheet) fields.push(`sheet: ${anchor.sheet}`);
+  if (anchor.sectionPath?.length) fields.push(`section: ${anchor.sectionPath.join(' > ')}`);
+  else if (anchor.heading) fields.push(`section: ${anchor.heading}`);
+  if (anchor.elementType) fields.push(`element_type: ${anchor.elementType}`);
+  if (anchor.tableId) fields.push(`table_id: ${anchor.tableId}`);
+  if (anchor.figureId) fields.push(`figure_id: ${anchor.figureId}`);
+  return fields.join('\n');
 }
 
 function sourceAnchorEntity(anchor: DocumentSourceAnchorEntity): SourceAnchor {

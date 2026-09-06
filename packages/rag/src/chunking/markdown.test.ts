@@ -78,6 +78,16 @@ describe('chunkMarkdown', () => {
     const structure: StructuredDocument = {
       version: 1,
       format: 'pdf',
+      quality: {
+        status: 'pass',
+        score: 100,
+        reasons: [],
+        scannedPages: 0,
+        unprocessedScannedPages: 0,
+        lowConfidenceOcrPages: 0,
+        emptySearchablePages: 0,
+        unanalyzedVisuals: 0,
+      },
       tables: [
         {
           id: 'p1-t1',
@@ -101,6 +111,7 @@ describe('chunkMarkdown', () => {
           textCoverage: 0.1,
           imageCount: 0,
           ocrApplied: false,
+          visionAnalyzedImages: 0,
           elements: [
             {
               id: 'p1-e1',

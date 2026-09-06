@@ -325,6 +325,8 @@ erDiagram
   `size_bytes bigint`、`sha256 char(64)`、`markdown_bucket varchar(255)?`、
   `markdown_object_key text?`、`structure_bucket varchar(255)?`、
   `structure_object_key text?`、`structure_sha256 char(64)?`、
+  `quality_status varchar(32)?`、`quality_score integer?`、
+  `quality_reasons jsonb?`、
   `parser_name varchar(128)?`、
   `parser_version varchar(64)?`、`ingestion_status varchar(32)`、
   `word_count integer`、`error_code varchar(128)?`、`error_message text?`、
@@ -363,10 +365,14 @@ ready | retrying | failed | cancelled`
   `document_version_id -> document_version.id ON DELETE CASCADE`
 - 字段：
   `id`、`tenant_id`、`document_id`、`document_version_id`、
-  `ordinal integer`、`content text`、`content_sha256 char(64)`、
+  `ordinal integer`、`content text`、`contextual_content text`、
+  `content_sha256 char(64)`、`embedding_input_sha256 char(64)`、
   `token_count integer`、`anchor_type varchar(32)`、`page_no?`、
   `slide_no?`、`sheet_name varchar(255)?`、`row_start?`、`row_end?`、
-  `heading text?`、`markdown_offset_start integer`、
+  `heading text?`、`element_type varchar(32)?`、`element_ids varchar[]`、
+  `section_path text[]`、`table_id varchar(128)?`、`figure_id varchar(128)?`、
+  `bounding_boxes jsonb`、`source_confidence real?`、`context_summary text?`、
+  `markdown_offset_start integer`、
   `markdown_offset_end integer`、`principal_ids varchar[]`、
   `embedding vector(384)`、`embedding_model varchar(128)`、
   `chunker_version varchar(64)`、`created_at`

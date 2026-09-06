@@ -524,7 +524,8 @@ export function buildGroundedPrompt(
   for (const hit of hits) {
     const ordinal = selectedHits.length + 1;
     const header = `[${ordinal}] ${hit.title} (${sourceLabel(hit)})\n`;
-    const fullBlock = `${header}${hit.content}`;
+    const context = hit.context ? `Context:\n${hit.context}\n` : '';
+    const fullBlock = `${header}${context}${hit.content}`;
     if (
       promptFits(
         question,
@@ -559,7 +560,7 @@ export function buildGroundedPrompt(
         candidate &&
         promptFits(
           question,
-          [...evidenceBlocks, `${header}${candidate}`],
+          [...evidenceBlocks, `${header}${context}${candidate}`],
           selectedHistory,
           options,
           evidenceBudgetTokens,
@@ -572,7 +573,7 @@ export function buildGroundedPrompt(
       }
     }
     if (!truncated) break;
-    evidenceBlocks.push(`${header}${truncated}`);
+    evidenceBlocks.push(`${header}${context}${truncated}`);
     selectedHits.push({ ...hit, content: truncated });
     break;
   }

@@ -602,6 +602,15 @@ export class DocumentVersionEntity {
   @Column('char', { name: 'structure_sha256', length: 64, nullable: true })
   structureSha256!: string | null;
 
+  @Column('varchar', { name: 'quality_status', length: 32, nullable: true })
+  qualityStatus!: 'pass' | 'review' | null;
+
+  @Column('integer', { name: 'quality_score', nullable: true })
+  qualityScore!: number | null;
+
+  @Column('jsonb', { name: 'quality_reasons', nullable: true })
+  qualityReasons!: string[] | null;
+
   @Column('varchar', { name: 'parser_name', length: 128, nullable: true })
   parserName!: string | null;
 
@@ -732,8 +741,14 @@ export class DocumentChunkEntity {
   @Column('text')
   content!: string;
 
+  @Column('text', { name: 'contextual_content' })
+  contextualContent!: string;
+
   @Column('char', { name: 'content_sha256', length: 64 })
   contentSha256!: string;
+
+  @Column('char', { name: 'embedding_input_sha256', length: 64 })
+  embeddingInputSha256!: string;
 
   @Column('integer', { name: 'token_count' })
   tokenCount!: number;
@@ -758,6 +773,35 @@ export class DocumentChunkEntity {
 
   @Column('text', { nullable: true })
   heading!: string | null;
+
+  @Column('varchar', { name: 'element_type', length: 32, nullable: true })
+  elementType!: string | null;
+
+  @Column('varchar', {
+    name: 'element_ids',
+    length: 128,
+    array: true,
+    default: () => "'{}'",
+  })
+  elementIds!: string[];
+
+  @Column('text', { name: 'section_path', array: true, default: () => "'{}'" })
+  sectionPath!: string[];
+
+  @Column('varchar', { name: 'table_id', length: 128, nullable: true })
+  tableId!: string | null;
+
+  @Column('varchar', { name: 'figure_id', length: 128, nullable: true })
+  figureId!: string | null;
+
+  @Column('jsonb', { name: 'bounding_boxes', default: () => "'[]'::jsonb" })
+  boundingBoxes!: Array<{ x: number; y: number; width: number; height: number }>;
+
+  @Column('real', { name: 'source_confidence', nullable: true })
+  sourceConfidence!: number | null;
+
+  @Column('text', { name: 'context_summary', nullable: true })
+  contextSummary!: string | null;
 
   @Column('integer', { name: 'markdown_offset_start' })
   markdownOffsetStart!: number;

@@ -10,7 +10,20 @@ export type PdfPageClassification = 'native' | 'scanned' | 'mixed';
 export type StructuredElementKind =
   'heading' | 'paragraph' | 'table' | 'figure' | 'caption' | 'header' | 'footer';
 
-export type StructuredElementSource = 'native' | 'ocr' | 'derived';
+export type StructuredElementSource = 'native' | 'ocr' | 'vision' | 'derived';
+
+export type DocumentQualityStatus = 'pass' | 'review';
+
+export type DocumentQualityReport = {
+  status: DocumentQualityStatus;
+  score: number;
+  reasons: string[];
+  scannedPages: number;
+  unprocessedScannedPages: number;
+  lowConfidenceOcrPages: number;
+  emptySearchablePages: number;
+  unanalyzedVisuals: number;
+};
 
 export type StructuredDocumentElement = {
   id: string;
@@ -27,6 +40,7 @@ export type StructuredDocumentElement = {
   bbox?: BoundingBox;
   confidence?: number;
   tableId?: string;
+  figureId?: string;
   assetFilename?: string;
 };
 
@@ -47,6 +61,7 @@ export type StructuredDocumentPage = {
   imageCount: number;
   ocrApplied: boolean;
   ocrConfidence?: number;
+  visionAnalyzedImages: number;
   elements: StructuredDocumentElement[];
 };
 
@@ -55,6 +70,7 @@ export type StructuredDocument = {
   format: 'pdf';
   pages: StructuredDocumentPage[];
   tables: StructuredDocumentTable[];
+  quality: DocumentQualityReport;
 };
 
 export type PdfOcrBlock = {
@@ -78,4 +94,29 @@ export type PdfOcrResult = {
 
 export interface PdfOcrEngine {
   recognize(input: PdfOcrInput): Promise<PdfOcrResult>;
+}
+
+export type PdfVisionKind =
+  'chart' | 'diagram' | 'table' | 'document' | 'photo' | 'decorative' | 'other';
+
+export type PdfVisionInput = {
+  page: number;
+  image: Uint8Array;
+  mimeType: string;
+  width: number;
+  height: number;
+  nearbyText: string;
+  tenantId?: string;
+  runId?: string;
+};
+
+export type PdfVisionResult = {
+  kind: PdfVisionKind;
+  description: string;
+  searchable: boolean;
+  confidence?: number;
+};
+
+export interface PdfVisionEngine {
+  analyze(input: PdfVisionInput): Promise<PdfVisionResult>;
 }

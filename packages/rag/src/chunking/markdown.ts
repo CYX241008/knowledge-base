@@ -186,7 +186,7 @@ function chunkStructuredDocument(
       markdown,
       first.offsetStart,
       last.offsetEnd,
-      elementAnchor(first),
+      groupAnchor(group),
       maxCharacters,
       overlapCharacters,
     );
@@ -353,9 +353,42 @@ function elementAnchor(element: StructuredDocumentElement): SourceAnchor {
     offsetStart: element.offsetStart,
     offsetEnd: element.offsetEnd,
     elementId: element.id,
+    elementIds: [element.id],
     elementType: element.kind,
     sectionPath: element.sectionPath,
     tableId: element.tableId,
+    figureId: element.figureId,
+    boundingBoxes: element.bbox ? [element.bbox] : undefined,
+    confidence: element.confidence,
+  };
+}
+
+function groupAnchor(elements: StructuredDocumentElement[]): SourceAnchor {
+  const first = elements[0];
+  if (!first) {
+    return { type: 'document', offsetStart: 0, offsetEnd: 0 };
+  }
+  const kinds = new Set(elements.map((element) => element.kind));
+  const confidences = elements
+    .map((element) => element.confidence)
+    .filter((value): value is number => value !== undefined);
+  return {
+    type: 'page',
+    page: first.page,
+    heading: first.sectionPath.at(-1),
+    offsetStart: first.offsetStart,
+    offsetEnd: elements.at(-1)?.offsetEnd ?? first.offsetEnd,
+    elementId: first.id,
+    elementIds: elements.map((element) => element.id),
+    elementType: kinds.size === 1 ? first.kind : undefined,
+    sectionPath: first.sectionPath,
+    tableId: elements.length === 1 ? first.tableId : undefined,
+    figureId: elements.length === 1 ? first.figureId : undefined,
+    boundingBoxes: elements.flatMap((element) => (element.bbox ? [element.bbox] : [])),
+    confidence:
+      confidences.length > 0
+        ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length
+        : undefined,
   };
 }
 

@@ -14,6 +14,7 @@ export type KeywordIndexedChunk = {
   tagIds: string[];
   title: string;
   content: string;
+  contextSummary: string;
   anchor: SourceAnchor;
 };
 
@@ -100,6 +101,7 @@ export class ElasticsearchChunkIndex {
           tag_ids: chunk.tagIds,
           title: chunk.title,
           content: chunk.content,
+          context_summary: chunk.contextSummary,
           anchor_type: chunk.anchor.type,
           page_no: chunk.anchor.page ?? null,
           slide_no: chunk.anchor.slide ?? null,
@@ -107,6 +109,11 @@ export class ElasticsearchChunkIndex {
           row_start: chunk.anchor.rowStart ?? null,
           row_end: chunk.anchor.rowEnd ?? null,
           heading: chunk.anchor.heading ?? null,
+          element_type: chunk.anchor.elementType ?? null,
+          element_ids: chunk.anchor.elementIds ?? [],
+          section_path: chunk.anchor.sectionPath ?? [],
+          table_id: chunk.anchor.tableId ?? null,
+          figure_id: chunk.anchor.figureId ?? null,
           markdown_offset_start: chunk.anchor.offsetStart,
           markdown_offset_end: chunk.anchor.offsetEnd,
         }),
@@ -160,7 +167,14 @@ export class ElasticsearchChunkIndex {
         _source: false,
         query: {
           bool: {
-            must: [{ multi_match: { query: text, fields: ['title^2', 'heading^1.5', 'content'] } }],
+            must: [
+              {
+                multi_match: {
+                  query: text,
+                  fields: ['title^2', 'heading^1.5', 'context_summary^1.25', 'content'],
+                },
+              },
+            ],
             filter,
           },
         },
@@ -211,6 +225,7 @@ function indexProperties(): Record<string, { type: string }> {
     tag_ids: { type: 'keyword' },
     title: { type: 'text' },
     content: { type: 'text' },
+    context_summary: { type: 'text' },
     anchor_type: { type: 'keyword' },
     page_no: { type: 'integer' },
     slide_no: { type: 'integer' },
@@ -218,6 +233,11 @@ function indexProperties(): Record<string, { type: string }> {
     row_start: { type: 'integer' },
     row_end: { type: 'integer' },
     heading: { type: 'text' },
+    element_type: { type: 'keyword' },
+    element_ids: { type: 'keyword' },
+    section_path: { type: 'keyword' },
+    table_id: { type: 'keyword' },
+    figure_id: { type: 'keyword' },
     markdown_offset_start: { type: 'integer' },
     markdown_offset_end: { type: 'integer' },
   };

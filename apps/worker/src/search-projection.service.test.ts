@@ -66,7 +66,10 @@ describe('embedding batches', () => {
 
   it('reuses a cached embedding and stores the tokenizer token count', async () => {
     const content = 'Reusable cached content';
+    const contextSummary = 'document_title: Reusable document';
+    const contextualContent = `${contextSummary}\n\n${content}`;
     const contentSha256 = createHash('sha256').update(content).digest('hex');
+    const embeddingInputSha256 = createHash('sha256').update(contextualContent).digest('hex');
     const vector = Array.from({ length: 384 }, () => 0);
     const saved: Array<Record<string, unknown>> = [];
     const chunkRepository = {
@@ -76,7 +79,7 @@ describe('embedding batches', () => {
       find: vi.fn(async () => [
         {
           tenantId: tenantId,
-          contentSha256,
+          contentSha256: embeddingInputSha256,
           embeddingModel: 'local-hash-v1',
           dimensions: 384,
           embedding: vector,
@@ -116,6 +119,7 @@ describe('embedding batches', () => {
       document: {
         id: '22222222-2222-4222-8222-222222222222',
         tenantId,
+        title: 'Reusable document',
         accessPrincipalIds: [`tenant:${tenantId}`],
       } as never,
       version: { id: versionId } as never,
@@ -127,6 +131,9 @@ describe('embedding batches', () => {
     expect(embeddingCacheRepository.upsert).not.toHaveBeenCalled();
     expect(saved[0]).toMatchObject({
       contentSha256,
+      embeddingInputSha256,
+      contextualContent,
+      contextSummary,
       embedding: vector,
       tokenCount: countModelTextTokens('local-hash-v1', content, 'o200k_base'),
     });
@@ -163,6 +170,7 @@ function config() {
     ELASTICSEARCH_URL: 'http://search:9200',
     ELASTICSEARCH_INDEX: 'chunks',
     DOCUMENT_MAX_CHUNKS: 10_000,
+    RAG_CONTEXTUAL_RETRIEVAL_ENABLED: true,
     EMBEDDING_BATCH_MAX_INPUTS: 64,
     EMBEDDING_BATCH_MAX_TOKENS: 50_000,
   };

@@ -133,6 +133,8 @@ function mergeCandidateGroup(
         ...representative.hit.source,
         offsetStart: Math.min(...ordered.map((candidate) => candidate.hit.source.offsetStart)),
         offsetEnd: Math.max(...ordered.map((candidate) => candidate.hit.source.offsetEnd)),
+        elementIds: ordered.flatMap((candidate) => candidate.hit.source.elementIds ?? []),
+        boundingBoxes: ordered.flatMap((candidate) => candidate.hit.source.boundingBoxes ?? []),
       },
     },
   };
@@ -216,6 +218,8 @@ function sourceIdentity(candidate: ConsolidationCandidate): string {
     candidate.hit.source.rowStart,
     candidate.hit.source.rowEnd,
     candidate.hit.source.heading,
+    candidate.hit.source.tableId,
+    candidate.hit.source.figureId,
   ]);
 }
 

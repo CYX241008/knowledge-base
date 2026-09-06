@@ -1,8 +1,10 @@
 import { PDFParse } from 'pdf-parse';
 import type { DocumentParser, ParsedAsset, ParseInput, ParseResult, SourceAnchor } from '../index';
 import type {
+  DocumentQualityReport,
   PdfOcrEngine,
   PdfPageClassification,
+  PdfVisionEngine,
   StructuredDocument,
   StructuredDocumentElement,
   StructuredDocumentPage,
@@ -37,11 +39,22 @@ export type PdfParserOptions = {
   ocrMinConfidence?: number;
   nativeTextMinCharacters?: number;
   headerFooterMinPageRatio?: number;
+  visionEngine?: PdfVisionEngine;
+  visionMaxImages?: number;
+  visionMinPixels?: number;
+  visionTimeoutMs?: number;
+  visionRequiredForMixedPages?: boolean;
+  qualityMinScore?: number;
 };
 
 type PageImage = {
+  id: string;
   filename: string;
   markdown: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  width: number;
+  height: number;
 };
 
 type ExtractedImages = {
@@ -53,8 +66,8 @@ export class PdfDocumentParser implements DocumentParser {
   readonly name = 'pdf-layout';
   readonly version = '3.0.0';
 
-  private readonly options: Required<Omit<PdfParserOptions, 'ocrEngine'>> &
-    Pick<PdfParserOptions, 'ocrEngine'>;
+  private readonly options: Required<Omit<PdfParserOptions, 'ocrEngine' | 'visionEngine'>> &
+    Pick<PdfParserOptions, 'ocrEngine' | 'visionEngine'>;
 
   constructor(options: PdfParserOptions = {}) {
     this.options = {
@@ -65,6 +78,12 @@ export class PdfDocumentParser implements DocumentParser {
       ocrMinConfidence: options.ocrMinConfidence ?? 40,
       nativeTextMinCharacters: options.nativeTextMinCharacters ?? 40,
       headerFooterMinPageRatio: options.headerFooterMinPageRatio ?? 0.6,
+      visionEngine: options.visionEngine,
+      visionMaxImages: options.visionMaxImages ?? 50,
+      visionMinPixels: options.visionMinPixels ?? 40_000,
+      visionTimeoutMs: options.visionTimeoutMs ?? 90_000,
+      visionRequiredForMixedPages: options.visionRequiredForMixedPages ?? false,
+      qualityMinScore: options.qualityMinScore ?? 75,
     };
   }
 
@@ -103,6 +122,7 @@ export class PdfDocumentParser implements DocumentParser {
       await this.applyOcr(parser, pages, warnings);
       this.attachTables(pages, tables);
       this.attachImages(pages, images.byPage);
+      await this.applyVision(pages, images.byPage, warnings, input);
 
       const rendered = renderDocument(pages);
       if (!pages.some((page) => page.elements.some((element) => element.text.trim()))) {
@@ -114,6 +134,13 @@ export class PdfDocumentParser implements DocumentParser {
         format: 'pdf',
         pages,
         tables,
+        quality: buildQualityReport(
+          pages,
+          warnings,
+          this.options.ocrMinConfidence,
+          this.options.visionRequiredForMixedPages,
+          this.options.qualityMinScore,
+        ),
       };
       return {
         markdown: rendered.markdown,
@@ -207,6 +234,7 @@ export class PdfDocumentParser implements DocumentParser {
         textCoverage: layout.textCoverage,
         imageCount,
         ocrApplied: false,
+        visionAnalyzedImages: 0,
         elements: createNativePageElements(layout, sectionPath),
       };
     });
@@ -339,8 +367,13 @@ export class PdfDocumentParser implements DocumentParser {
           const filename = `pdf-image-p${page.pageNumber}-${String(ordinal).padStart(3, '0')}.${extensionForMimeType(mimeType)}`;
           const pageImages = byPage.get(page.pageNumber) ?? [];
           pageImages.push({
+            id: `p${page.pageNumber}-f${ordinal}`,
             filename,
             markdown: `![PDF page ${page.pageNumber} image ${ordinal}](${assetReference(filename)})`,
+            mimeType,
+            bytes: image.data,
+            width: image.width,
+            height: image.height,
           });
           byPage.set(page.pageNumber, pageImages);
           assets.push({
@@ -436,8 +469,13 @@ export class PdfDocumentParser implements DocumentParser {
     for (const page of pages) {
       for (const image of imagesByPage.get(page.page) ?? []) {
         const order = Math.max(0, ...page.elements.map((element) => element.order)) + 1;
+        const sectionPath =
+          [...page.elements]
+            .reverse()
+            .find((element) => element.searchable && element.sectionPath.length > 0)?.sectionPath ??
+          [];
         page.elements.push({
-          id: `p${page.page}-figure-${order}`,
+          id: image.id,
           kind: 'figure',
           page: page.page,
           order,
@@ -447,10 +485,65 @@ export class PdfDocumentParser implements DocumentParser {
           offsetEnd: 0,
           searchable: false,
           source: 'derived',
-          sectionPath: [],
+          sectionPath: [...sectionPath],
+          figureId: image.id,
           assetFilename: image.filename,
         });
       }
+    }
+  }
+
+  private async applyVision(
+    pages: StructuredDocumentPage[],
+    imagesByPage: Map<number, PageImage[]>,
+    warnings: string[],
+    input: ParseInput,
+  ): Promise<void> {
+    if (!this.options.visionEngine) return;
+    const candidates = pages.flatMap((page) =>
+      (imagesByPage.get(page.page) ?? [])
+        .filter((image) => image.width * image.height >= this.options.visionMinPixels)
+        .map((image) => ({ page, image })),
+    );
+    for (const { page, image } of candidates.slice(0, this.options.visionMaxImages)) {
+      const element = page.elements.find((candidate) => candidate.figureId === image.id);
+      if (!element) continue;
+      try {
+        const result = await withTimeout(
+          this.options.visionEngine.analyze({
+            page: page.page,
+            image: image.bytes,
+            mimeType: image.mimeType,
+            width: image.width,
+            height: image.height,
+            nearbyText: page.elements
+              .filter((candidate) => candidate.searchable && candidate.kind !== 'figure')
+              .map((candidate) => candidate.text)
+              .join('\n')
+              .slice(0, 2_000),
+            tenantId: input.tenantId,
+            runId: input.documentVersionId,
+          }),
+          this.options.visionTimeoutMs,
+          `PDF page ${page.page} image analysis timed out`,
+        );
+        page.visionAnalyzedImages += 1;
+        element.kind = result.kind === 'table' ? 'table' : 'figure';
+        element.text = result.description.trim();
+        element.markdown = `${image.markdown}\n\n> Visual analysis: ${result.description.trim()}`;
+        element.searchable = result.searchable && Boolean(result.description.trim());
+        element.source = 'vision';
+        element.confidence = result.confidence;
+      } catch (error) {
+        warnings.push(
+          `PDF page ${page.page} image ${image.filename} analysis failed: ${errorMessage(error)}`,
+        );
+      }
+    }
+    if (candidates.length > this.options.visionMaxImages) {
+      warnings.push(
+        `Skipped ${candidates.length - this.options.visionMaxImages} PDF images beyond the configured vision limit`,
+      );
     }
   }
 }
@@ -493,9 +586,13 @@ function renderDocument(pages: StructuredDocumentPage[]): {
         offsetStart: element.offsetStart,
         offsetEnd: element.offsetEnd,
         elementId: element.id,
+        elementIds: [element.id],
         elementType: element.kind,
         sectionPath: element.sectionPath,
         tableId: element.tableId,
+        figureId: element.figureId,
+        boundingBoxes: element.bbox ? [element.bbox] : undefined,
+        confidence: element.confidence,
       });
     }
     anchors.push({
@@ -523,4 +620,60 @@ function normalizedTerms(value: string): string[] {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function buildQualityReport(
+  pages: StructuredDocumentPage[],
+  warnings: string[],
+  minimumOcrConfidence: number,
+  visionRequiredForMixedPages: boolean,
+  minimumScore: number,
+): DocumentQualityReport {
+  const scannedPages = pages.filter((page) => page.classification === 'scanned');
+  const unprocessedScannedPages = scannedPages.filter((page) => !page.ocrApplied).length;
+  const lowConfidenceOcrPages = scannedPages.filter(
+    (page) => page.ocrApplied && (page.ocrConfidence ?? 0) < minimumOcrConfidence,
+  ).length;
+  const emptySearchablePages = pages.filter(
+    (page) => !page.elements.some((element) => element.searchable && element.text.trim()),
+  ).length;
+  const unanalyzedVisuals = pages.reduce(
+    (sum, page) => sum + Math.max(0, page.imageCount - page.visionAnalyzedImages),
+    0,
+  );
+  const reasons: string[] = [];
+  if (unprocessedScannedPages > 0) {
+    reasons.push(`${unprocessedScannedPages} scanned page(s) were not processed by OCR`);
+  }
+  if (lowConfidenceOcrPages > 0) {
+    reasons.push(`${lowConfidenceOcrPages} OCR page(s) are below the confidence threshold`);
+  }
+  if (emptySearchablePages > 0) {
+    reasons.push(`${emptySearchablePages} page(s) contain no searchable content`);
+  }
+  if (visionRequiredForMixedPages && unanalyzedVisuals > 0) {
+    reasons.push(`${unanalyzedVisuals} visual element(s) were not analyzed`);
+  }
+  if (warnings.some((warning) => /degraded|failed/iu.test(warning))) {
+    reasons.push('One or more parsing stages degraded or failed');
+  }
+  const score = Math.max(
+    0,
+    100 -
+      unprocessedScannedPages * 35 -
+      lowConfidenceOcrPages * 20 -
+      emptySearchablePages * 25 -
+      (visionRequiredForMixedPages ? Math.min(30, unanalyzedVisuals * 5) : 0) -
+      (warnings.length > 0 ? Math.min(15, warnings.length * 3) : 0),
+  );
+  return {
+    status: score >= minimumScore && reasons.length === 0 ? 'pass' : 'review',
+    score,
+    reasons,
+    scannedPages: scannedPages.length,
+    unprocessedScannedPages,
+    lowConfidenceOcrPages,
+    emptySearchablePages,
+    unanalyzedVisuals,
+  };
 }

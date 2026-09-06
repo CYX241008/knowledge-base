@@ -23,7 +23,7 @@ import {
 } from '@knowledge-base/database';
 import { assertIngestionTransition, canTransitionIngestionStatus } from '@knowledge-base/domain';
 import { ObjectStorage } from '@knowledge-base/object-storage';
-import type { StructuredDocument } from '@knowledge-base/rag';
+import { renderPdfPagePng, type StructuredDocument } from '@knowledge-base/rag';
 import { DataSource, IsNull, Repository } from 'typeorm';
 import { IngestionService } from '../ingestion/ingestion.service';
 import { OBJECT_STORAGE } from '../storage/storage.constants';
@@ -155,6 +155,9 @@ export class DocumentsService {
           structureBucket: null,
           structureObjectKey: null,
           structureSha256: null,
+          qualityStatus: null,
+          qualityScore: null,
+          qualityReasons: null,
           parserName: null,
           parserVersion: null,
           ingestionStatus: 'received',
@@ -453,7 +456,12 @@ export class DocumentsService {
     };
   }
 
-  async getMarkdown(tenantId: string, documentId: string, versionId: string): Promise<string> {
+  async getMarkdown(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+    preserveOffsets = false,
+  ): Promise<string> {
     const version = await this.versionRepository.findOne({
       where: { id: versionId, documentId, tenantId },
     });
@@ -464,6 +472,7 @@ export class DocumentsService {
       this.config.getOrThrow('MAX_UPLOAD_SIZE_BYTES') * 2,
     );
     const markdown = new TextDecoder().decode(bytes);
+    if (preserveOffsets) return markdown;
     const assets = await this.assetRepository.find({
       where: { tenantId, documentVersionId: versionId },
       order: { ordinal: 'ASC' },
@@ -509,6 +518,29 @@ export class DocumentsService {
       throw new Error(`Structured data for version ${versionId} is invalid`);
     }
     return parsed;
+  }
+
+  async getPdfPagePreview(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+    page: number,
+  ): Promise<Uint8Array> {
+    const version = await this.versionRepository.findOne({
+      where: { id: versionId, documentId, tenantId },
+    });
+    if (!version) throw new NotFoundException(`Document version ${versionId} not found`);
+    if (version.mimeType !== 'application/pdf' && extensionOf(version.sourceFilename) !== 'pdf') {
+      throw new BadRequestException({
+        code: 'DOCUMENT_PREVIEW_UNSUPPORTED',
+        message: 'Page preview is only available for PDF documents',
+      });
+    }
+    const source = await this.storage.getObjectBytes(
+      version.sourceObjectKey,
+      this.config.getOrThrow('MAX_UPLOAD_SIZE_BYTES'),
+    );
+    return renderPdfPagePng(source, page);
   }
 }
 
