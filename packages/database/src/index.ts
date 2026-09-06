@@ -17,6 +17,7 @@ import { ModelUsageEvent1788364900000 } from './migrations/1788364900000-model-u
 import { EmbeddingCache1788365000000 } from './migrations/1788365000000-embedding-cache';
 import { EmbeddingCacheBackfill1788365100000 } from './migrations/1788365100000-embedding-cache-backfill';
 import { ModelBudgetGovernance1788624000000 } from './migrations/1788624000000-model-budget-governance';
+import { PdfStructure1788710400000 } from './migrations/1788710400000-pdf-structure';
 
 export * from './entities';
 
@@ -37,6 +38,7 @@ export const databaseMigrations = [
   EmbeddingCache1788365000000,
   EmbeddingCacheBackfill1788365100000,
   ModelBudgetGovernance1788624000000,
+  PdfStructure1788710400000,
 ] as const;
 
 export function createDatabaseOptions(

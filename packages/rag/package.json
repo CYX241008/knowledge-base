@@ -20,6 +20,7 @@
     "mammoth": "catalog:",
     "officeparser": "catalog:",
     "pdf-parse": "catalog:",
+    "pdfjs-dist": "catalog:",
     "turndown": "catalog:",
     "turndown-plugin-gfm": "catalog:"
   },

@@ -28,6 +28,7 @@
     "bullmq": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:",
+    "tesseract.js": "catalog:",
     "typeorm": "catalog:"
   },
   "devDependencies": {

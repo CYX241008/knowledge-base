@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -23,6 +23,7 @@ import {
 } from '@knowledge-base/database';
 import { assertIngestionTransition, canTransitionIngestionStatus } from '@knowledge-base/domain';
 import { ObjectStorage } from '@knowledge-base/object-storage';
+import type { StructuredDocument } from '@knowledge-base/rag';
 import { DataSource, IsNull, Repository } from 'typeorm';
 import { IngestionService } from '../ingestion/ingestion.service';
 import { OBJECT_STORAGE } from '../storage/storage.constants';
@@ -151,6 +152,9 @@ export class DocumentsService {
           sha256: input.sha256.toLowerCase(),
           markdownBucket: null,
           markdownObjectKey: null,
+          structureBucket: null,
+          structureObjectKey: null,
+          structureSha256: null,
           parserName: null,
           parserVersion: null,
           ingestionStatus: 'received',
@@ -480,6 +484,43 @@ export class DocumentsService {
       return signedReferences.get(reference) ?? reference;
     });
   }
+
+  async getStructure(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+  ): Promise<StructuredDocument> {
+    const version = await this.versionRepository.findOne({
+      where: { id: versionId, documentId, tenantId },
+    });
+    if (!version?.structureObjectKey) {
+      throw new NotFoundException(`Structured data for version ${versionId} is not ready`);
+    }
+    const bytes = await this.storage.getObjectBytes(
+      version.structureObjectKey,
+      this.config.getOrThrow('MAX_UPLOAD_SIZE_BYTES') * 2,
+    );
+    const checksum = createHash('sha256').update(bytes).digest('hex');
+    if (version.structureSha256 && checksum !== version.structureSha256.trim()) {
+      throw new Error(`Structured data checksum mismatch for version ${versionId}`);
+    }
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!isStructuredDocument(parsed)) {
+      throw new Error(`Structured data for version ${versionId} is invalid`);
+    }
+    return parsed;
+  }
+}
+
+function isStructuredDocument(value: unknown): value is StructuredDocument {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<StructuredDocument>;
+  return (
+    candidate.version === 1 &&
+    candidate.format === 'pdf' &&
+    Array.isArray(candidate.pages) &&
+    Array.isArray(candidate.tables)
+  );
 }
 
 function extensionOf(filename: string): string {

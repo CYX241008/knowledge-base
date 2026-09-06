@@ -27,6 +27,7 @@ import { AuthenticationGuard } from '../auth/authentication.guard';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { DocumentsService } from './documents.service';
 import { AccessControlService } from '../access-control/access-control.service';
+import type { StructuredDocument } from '@knowledge-base/rag';
 
 @Controller('documents')
 @UseGuards(AuthenticationGuard)
@@ -120,6 +121,18 @@ export class DocumentsController {
   ): Promise<string> {
     await this.accessControl.assertDocumentRead(auth, documentId);
     return this.documentsService.getMarkdown(auth.tenantId, documentId, versionId);
+  }
+
+  @Get(':documentId/versions/:versionId/structure')
+  async getStructure(
+    @Param('documentId') documentId: string,
+    @Param('versionId') versionId: string,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<StructuredDocument>> {
+    await this.accessControl.assertDocumentRead(auth, documentId);
+    return buildSuccess(
+      await this.documentsService.getStructure(auth.tenantId, documentId, versionId),
+    );
   }
 
   @Get(':documentId')

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { SourceAnchor } from '../index';
+import type { StructuredDocument, StructuredDocumentElement } from '../structured-document';
 
-export const CHUNKER_VERSION = 'markdown-structure-v1';
+export const CHUNKER_VERSION = 'document-elements-v2';
 
 export type MarkdownChunk = {
   id: string;
@@ -17,6 +18,7 @@ export type MarkdownChunk = {
 export type ChunkMarkdownOptions = {
   maxCharacters?: number;
   overlapCharacters?: number;
+  structure?: StructuredDocument;
 };
 
 type StructuralRange = {
@@ -45,6 +47,15 @@ export function chunkMarkdown(
   if (overlapCharacters < 0 || overlapCharacters >= maxCharacters)
     throw new Error('overlapCharacters must be between 0 and maxCharacters');
   if (!markdown.trim()) return [];
+  if (options.structure) {
+    return chunkStructuredDocument(
+      documentVersionId,
+      markdown,
+      options.structure,
+      maxCharacters,
+      overlapCharacters,
+    );
+  }
 
   const ranges = structuralRanges(markdown, anchors);
   const chunks: MarkdownChunk[] = [];
@@ -135,8 +146,217 @@ function sameSource(left: SourceAnchor, right: SourceAnchor): boolean {
     left.sheet === right.sheet &&
     left.rowStart === right.rowStart &&
     left.rowEnd === right.rowEnd &&
-    left.heading === right.heading
+    left.heading === right.heading &&
+    left.elementId === right.elementId &&
+    left.elementType === right.elementType &&
+    left.tableId === right.tableId
   );
+}
+
+function chunkStructuredDocument(
+  documentVersionId: string,
+  markdown: string,
+  structure: StructuredDocument,
+  maxCharacters: number,
+  overlapCharacters: number,
+): MarkdownChunk[] {
+  const elements = structure.pages
+    .flatMap((page) => page.elements)
+    .filter(
+      (element) =>
+        element.offsetEnd > element.offsetStart &&
+        element.offsetStart >= 0 &&
+        element.offsetEnd <= markdown.length,
+    )
+    .sort(
+      (left, right) => left.offsetStart - right.offsetStart || left.offsetEnd - right.offsetEnd,
+    );
+  if (elements.length === 0) return [];
+
+  const chunks: MarkdownChunk[] = [];
+  let group: StructuredDocumentElement[] = [];
+  const flushGroup = () => {
+    if (group.length === 0) return;
+    const first = group[0];
+    const last = group.at(-1);
+    if (!first || !last) return;
+    pushRangeChunks(
+      chunks,
+      documentVersionId,
+      markdown,
+      first.offsetStart,
+      last.offsetEnd,
+      elementAnchor(first),
+      maxCharacters,
+      overlapCharacters,
+    );
+    group = [];
+  };
+
+  for (const element of elements) {
+    if (!element.searchable) {
+      flushGroup();
+      continue;
+    }
+    if (element.kind === 'table') {
+      flushGroup();
+      pushTableChunks(chunks, documentVersionId, element, maxCharacters);
+      continue;
+    }
+    const first = group[0];
+    const groupStart = first?.offsetStart ?? element.offsetStart;
+    const sameContext =
+      !first ||
+      (first.page === element.page &&
+        first.sectionPath.join('\u0000') === element.sectionPath.join('\u0000'));
+    if (!sameContext || element.offsetEnd - groupStart > maxCharacters) flushGroup();
+    group.push(element);
+  }
+  flushGroup();
+  return chunks;
+}
+
+function pushRangeChunks(
+  chunks: MarkdownChunk[],
+  documentVersionId: string,
+  markdown: string,
+  start: number,
+  end: number,
+  anchor: SourceAnchor,
+  maxCharacters: number,
+  overlapCharacters: number,
+): void {
+  let cursor = trimStart(markdown, start, end);
+  const rangeEnd = trimEnd(markdown, cursor, end);
+  while (cursor < rangeEnd) {
+    const proposedEnd = Math.min(cursor + maxCharacters, rangeEnd);
+    const rawEnd =
+      proposedEnd === rangeEnd ? rangeEnd : preferredBreak(markdown, cursor, proposedEnd);
+    const contentStart = trimStart(markdown, cursor, rawEnd);
+    const contentEnd = trimEnd(markdown, contentStart, rawEnd);
+    if (contentEnd > contentStart) {
+      pushChunk(
+        chunks,
+        documentVersionId,
+        markdown.slice(contentStart, contentEnd),
+        contentStart,
+        contentEnd,
+        { ...anchor, offsetStart: contentStart, offsetEnd: contentEnd },
+      );
+    }
+    if (rawEnd >= rangeEnd) break;
+    cursor = trimStart(markdown, Math.max(cursor + 1, rawEnd - overlapCharacters), rangeEnd);
+  }
+}
+
+function pushTableChunks(
+  chunks: MarkdownChunk[],
+  documentVersionId: string,
+  element: StructuredDocumentElement,
+  maxCharacters: number,
+): void {
+  if (element.markdown.length <= maxCharacters) {
+    pushChunk(
+      chunks,
+      documentVersionId,
+      element.markdown,
+      element.offsetStart,
+      element.offsetEnd,
+      elementAnchor(element),
+    );
+    return;
+  }
+
+  const lines = element.markdown.split('\n');
+  const tableStart = lines.findIndex((line) => line.trimStart().startsWith('|'));
+  if (tableStart < 0 || lines.length - tableStart < 3) {
+    pushTextPieces(chunks, documentVersionId, element, maxCharacters);
+    return;
+  }
+  const prefix = lines.slice(0, tableStart).join('\n').trim();
+  const header = lines[tableStart];
+  const separator = lines[tableStart + 1];
+  if (!header || !separator) {
+    pushTextPieces(chunks, documentVersionId, element, maxCharacters);
+    return;
+  }
+  let rows: string[] = [];
+  const flush = () => {
+    if (rows.length === 0) return;
+    const content = [prefix, [header, separator, ...rows].join('\n')].filter(Boolean).join('\n\n');
+    pushChunk(
+      chunks,
+      documentVersionId,
+      content,
+      element.offsetStart,
+      element.offsetEnd,
+      elementAnchor(element),
+    );
+    rows = [];
+  };
+  for (const row of lines.slice(tableStart + 2)) {
+    const candidate = [prefix, [header, separator, ...rows, row].join('\n')]
+      .filter(Boolean)
+      .join('\n\n');
+    if (rows.length > 0 && candidate.length > maxCharacters) flush();
+    rows.push(row);
+  }
+  flush();
+}
+
+function pushTextPieces(
+  chunks: MarkdownChunk[],
+  documentVersionId: string,
+  element: StructuredDocumentElement,
+  maxCharacters: number,
+): void {
+  for (let start = 0; start < element.markdown.length; start += maxCharacters) {
+    const content = element.markdown.slice(start, start + maxCharacters).trim();
+    if (!content) continue;
+    pushChunk(
+      chunks,
+      documentVersionId,
+      content,
+      element.offsetStart,
+      element.offsetEnd,
+      elementAnchor(element),
+    );
+  }
+}
+
+function pushChunk(
+  chunks: MarkdownChunk[],
+  documentVersionId: string,
+  content: string,
+  offsetStart: number,
+  offsetEnd: number,
+  anchor: SourceAnchor,
+): void {
+  const ordinal = chunks.length + 1;
+  chunks.push({
+    id: deterministicChunkId(documentVersionId, ordinal),
+    ordinal,
+    content,
+    contentSha256: createHash('sha256').update(content).digest('hex'),
+    tokenCount: estimateTokenCount(content),
+    offsetStart,
+    offsetEnd,
+    anchor,
+  });
+}
+
+function elementAnchor(element: StructuredDocumentElement): SourceAnchor {
+  return {
+    type: 'page',
+    page: element.page,
+    heading: element.sectionPath.at(-1),
+    offsetStart: element.offsetStart,
+    offsetEnd: element.offsetEnd,
+    elementId: element.id,
+    elementType: element.kind,
+    sectionPath: element.sectionPath,
+    tableId: element.tableId,
+  };
 }
 
 function preferredBreak(markdown: string, start: number, end: number): number {

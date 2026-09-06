@@ -19,6 +19,8 @@ pnpm dev
 
 打开 Web 后可以上传 `.txt`、`.md`、`.markdown`、`.docx`、`.pdf`、`.xlsx` 或 `.pptx` 文件（最大 50 MB）。DOCX 保留标题、列表、表格和链接；PDF 生成页边界与页码锚点；XLSX 保留 Sheet、表格、公式缓存结果和合并单元格主值；PPTX 保留幻灯片标题、正文和表格。内嵌图片存入私有 `document_asset`，读取 Markdown 时才生成短期签名地址。工作台的知识问答按 SSE 流式输出，并可从引用直接跳到对应文档预览。
 
+PDF 摄取会按页识别原生文本、扫描页和图文混排页，恢复文本块、标题层级、阅读顺序和归一化坐标，自动剔除重复页眉页脚，并额外保存结构化 JSON 产物。表格同时保留 Markdown 与二维行列数据，分块时保持语义元素和表格行完整。设置 `PDF_OCR_PROVIDER=tesseract` 后，扫描页会渲染为图片并按需 OCR；生产环境建议通过 `PDF_OCR_LANG_PATH` 固定语言模型来源，避免运行时依赖公共下载服务。
+
 处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
 
 检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合。进入付费 Reranker 前会先按内容哈希删除完全重复项、限制单文档分片数，并按独立候选数和 Token 预算打包；重排后再合并相邻分片、过滤同来源近重复项并使用 MMR 降低冗余。`RAG_RERANK_CANDIDATE_LIMIT`、`RAG_RERANK_MAX_TOKENS`、`RAG_MAX_CHUNKS_PER_DOCUMENT` 控制重排成本，`RAG_NEAR_DUPLICATE_THRESHOLD` 和 `RAG_MMR_LAMBDA` 控制后续整理。查询只使用与当前 `EMBEDDING_MODEL` 一致的向量，避免同维度模型切换时混用不兼容向量。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
@@ -130,6 +132,7 @@ pnpm e2e:document-review
 - `POST /api/ingestion/jobs/:jobId/retry`：重新处理最终失败的版本。
 - `POST /api/ingestion/jobs/:jobId/cancel`：取消排队中或运行中的任务。
 - `GET /api/documents/:documentId/versions/:versionId/markdown`：读取规范化 Markdown。
+- `GET /api/documents/:documentId/versions/:versionId/structure`：读取 PDF 页分类、版面元素、坐标和结构化表格。
 - `POST /api/search`：按鉴权上下文执行关键词/向量混合检索、重排并返回来源。
 - `GET /api/search/preferences`：读取当前租户的默认分页数与反馈开关。
 - `POST /api/search/feedback`：提交当前用户对一次检索事件的结构化反馈。

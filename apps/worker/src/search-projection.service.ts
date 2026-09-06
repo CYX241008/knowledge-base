@@ -20,6 +20,7 @@ import {
   ElasticsearchChunkIndex,
   chunkMarkdown,
   type SourceAnchor,
+  type StructuredDocument,
 } from '@knowledge-base/rag';
 import { createHash } from 'node:crypto';
 import { DataSource, In, IsNull, Repository } from 'typeorm';
@@ -33,6 +34,7 @@ type BuildChunksInput = {
   version: DocumentVersionEntity;
   markdown: string;
   anchors: SourceAnchor[];
+  structure?: StructuredDocument;
 };
 
 type EmbeddingBatchItem = {
@@ -111,7 +113,9 @@ export class SearchProjectionService {
   async buildChunks(input: BuildChunksInput): Promise<{ count: number; checksum: string }> {
     const dimensions = this.config.getOrThrow('EMBEDDING_DIMENSIONS');
     const tokenizerEncoding = this.config.getOrThrow('MODEL_TOKENIZER_ENCODING');
-    const chunks = chunkMarkdown(input.version.id, input.markdown, input.anchors).map((chunk) => ({
+    const chunks = chunkMarkdown(input.version.id, input.markdown, input.anchors, {
+      structure: input.structure,
+    }).map((chunk) => ({
       ...chunk,
       tokenCount: countModelTextTokens(this.embeddingModel, chunk.content, tokenizerEncoding),
     }));
@@ -304,11 +308,22 @@ export class SearchProjectionService {
         where: { documentVersionId: version.id, tenantId: version.tenantId },
         order: { markdownOffsetStart: 'ASC' },
       });
+      const structure = version.structureObjectKey
+        ? parseStructuredDocument(
+            new TextDecoder().decode(
+              await this.storage.getObjectBytes(
+                version.structureObjectKey,
+                this.config.getOrThrow('MAX_UPLOAD_SIZE_BYTES'),
+              ),
+            ),
+          )
+        : undefined;
       const built = await this.buildChunks({
         document,
         version,
         markdown,
         anchors: anchors.map(sourceAnchorEntity),
+        structure,
       });
       await this.indexKeywords(document, version.id);
       chunkCount += built.count;
@@ -381,4 +396,18 @@ function sourceAnchorEntity(anchor: DocumentSourceAnchorEntity): SourceAnchor {
     offsetStart: anchor.markdownOffsetStart,
     offsetEnd: anchor.markdownOffsetEnd,
   };
+}
+
+function parseStructuredDocument(value: string): StructuredDocument | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const structure = parsed as Partial<StructuredDocument>;
+    if (structure.version !== 1 || structure.format !== 'pdf' || !Array.isArray(structure.pages)) {
+      return undefined;
+    }
+    return structure as StructuredDocument;
+  } catch {
+    return undefined;
+  }
 }

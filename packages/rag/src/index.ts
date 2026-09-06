@@ -8,6 +8,10 @@ export type SourceAnchor = {
   heading?: string;
   offsetStart: number;
   offsetEnd: number;
+  elementId?: string;
+  elementType?: import('./structured-document').StructuredElementKind;
+  sectionPath?: string[];
+  tableId?: string;
 };
 export type RetrievedChunk = {
   id: string;
@@ -36,7 +40,17 @@ export type ParseResult = {
   anchors: SourceAnchor[];
   assets: ParsedAsset[];
   warnings: string[];
-  stats: { characters: number; pages?: number; slides?: number; sheets?: number };
+  stats: {
+    characters: number;
+    pages?: number;
+    slides?: number;
+    sheets?: number;
+    scannedPages?: number;
+    mixedPages?: number;
+    ocrPages?: number;
+    tables?: number;
+  };
+  structure?: import('./structured-document').StructuredDocument;
 };
 
 export type ParseInput = { filename: string; mimeType: string; bytes: Uint8Array };
@@ -89,3 +103,17 @@ export type {
   RagEvaluationRetrievalDiagnostics,
   RagEvaluationStage,
 } from './evaluation';
+export type {
+  BoundingBox,
+  PdfOcrBlock,
+  PdfOcrEngine,
+  PdfOcrInput,
+  PdfOcrResult,
+  PdfPageClassification,
+  StructuredDocument,
+  StructuredDocumentElement,
+  StructuredDocumentPage,
+  StructuredDocumentTable,
+  StructuredElementKind,
+  StructuredElementSource,
+} from './structured-document';

@@ -55,6 +55,8 @@
 - BullMQ 文档处理任务、进度、重试、取消和失败记录。
 - TXT、Markdown、DOCX、PDF、XLSX、PPTX 转 Markdown。
 - PDF 页码、PPTX 幻灯片、XLSX Sheet/行和 Markdown 标题来源锚点。
+- PDF 页级类型识别、版面元素、重复页眉页脚清理和可配置扫描页 OCR。
+- PDF 表格同时保存 Markdown 与结构化行列数据。
 - PDF 图片等派生资源保存。
 - Markdown 预览。
 - 为后续切片、Embedding 和检索提供稳定输入。
@@ -64,7 +66,6 @@
 - MongoDB、Mongoose Schema 和 PostgreSQL/MongoDB 双写。
 - RustFS 服务本身；仅复用其 S3 兼容客户端思路，目标存储仍为 MinIO。
 - 浏览、点赞、评论、收藏等内容社区字段。
-- 扫描 PDF OCR。
 - XLS、DOC、PPT 等旧版二进制 Office 格式。
 - 音频、视频和知识图谱解析。
 - 多人在线编辑和正文局部更新。
@@ -420,16 +421,16 @@ RECEIVED -> STORED -> PARSING -> NORMALIZING -> CHUNKING
 
 ## 12. 主要风险与应对
 
-| 风险                             | 应对                                    |
-| -------------------------------- | --------------------------------------- |
-| PDF 表格、双栏和扫描件质量不稳定 | 保存 warning 和解析器版本；OCR 独立迭代 |
-| DOCX 图片或复杂样式丢失          | 增加图片 converter 和黄金样例           |
-| XLSX 产生超大 Markdown           | Sheet/行/列/输出大小限制，分段产出      |
-| PPTX OOXML 正则路径兼容性不足    | 多版本样例测试，保留 officeparser 降级  |
-| Worker 重试产生重复对象          | 使用版本前缀、确定性 key 和 checksum    |
-| 数据库成功但队列投递失败         | PostgreSQL Outbox                       |
-| 新版本失败影响线上读取           | 原子切换 `current_ready_version_id`     |
-| 永久 URL 绕过权限                | 只保存私有 object key，访问时重新授权   |
+| 风险                             | 应对                                                                  |
+| -------------------------------- | --------------------------------------------------------------------- |
+| PDF 表格、双栏和扫描件质量不稳定 | 页级类型路由、版面坐标、重复页眉页脚清理、可配置 OCR 和结构化黄金样例 |
+| DOCX 图片或复杂样式丢失          | 增加图片 converter 和黄金样例                                         |
+| XLSX 产生超大 Markdown           | Sheet/行/列/输出大小限制，分段产出                                    |
+| PPTX OOXML 正则路径兼容性不足    | 多版本样例测试，保留 officeparser 降级                                |
+| Worker 重试产生重复对象          | 使用版本前缀、确定性 key 和 checksum                                  |
+| 数据库成功但队列投递失败         | PostgreSQL Outbox                                                     |
+| 新版本失败影响线上读取           | 原子切换 `current_ready_version_id`                                   |
+| 永久 URL 绕过权限                | 只保存私有 object key，访问时重新授权                                 |
 
 ## 13. 首个可交付里程碑
 

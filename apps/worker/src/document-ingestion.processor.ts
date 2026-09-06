@@ -28,15 +28,16 @@ import { DocumentParserRegistry, type ParsedDocument } from '@knowledge-base/rag
 import { DataSource, Repository } from 'typeorm';
 import { OBJECT_STORAGE } from './worker.constants';
 import { SearchProjectionService } from './search-projection.service';
+import { TesseractPdfOcrService } from './tesseract-pdf-ocr.service';
 
-const PROCESSOR_VERSION = 'document-ingestion-v5';
+const PROCESSOR_VERSION = 'document-ingestion-v6';
 
 class IngestionCancelledError extends Error {}
 class StaleIngestionJobError extends Error {}
 
 @Processor(DOCUMENT_INGESTION_QUEUE)
 export class DocumentIngestionProcessor extends WorkerHost {
-  private readonly parser = new DocumentParserRegistry();
+  private readonly parser: DocumentParserRegistry;
 
   constructor(
     @Inject(DataSource) private readonly dataSource: DataSource,
@@ -54,8 +55,21 @@ export class DocumentIngestionProcessor extends WorkerHost {
     private readonly stageRepository: Repository<IngestionStageEntity>,
     @Inject(SearchProjectionService)
     private readonly searchProjection: SearchProjectionService,
+    @Inject(TesseractPdfOcrService)
+    private readonly pdfOcr: TesseractPdfOcrService,
   ) {
     super();
+    this.parser = new DocumentParserRegistry({
+      pdf: {
+        ocrEngine: this.pdfOcr.enabled ? this.pdfOcr : undefined,
+        ocrMaxPages: this.config.getOrThrow('PDF_OCR_MAX_PAGES'),
+        ocrRenderWidth: this.config.getOrThrow('PDF_OCR_RENDER_WIDTH'),
+        ocrTimeoutMs: this.config.getOrThrow('PDF_OCR_TIMEOUT_MS'),
+        ocrMinConfidence: this.config.getOrThrow('PDF_OCR_MIN_CONFIDENCE'),
+        nativeTextMinCharacters: this.config.getOrThrow('PDF_NATIVE_TEXT_MIN_CHARACTERS'),
+        headerFooterMinPageRatio: this.config.getOrThrow('PDF_HEADER_FOOTER_MIN_PAGE_RATIO'),
+      },
+    });
   }
 
   async process(
@@ -185,6 +199,7 @@ export class DocumentIngestionProcessor extends WorkerHost {
         version,
         markdown: normalized.markdown,
         anchors: parsed.anchors,
+        structure: parsed.structure,
       });
       await this.assertRunnable(data);
       await this.updateStage(
@@ -373,6 +388,7 @@ export class DocumentIngestionProcessor extends WorkerHost {
     parsed: ParsedDocument,
   ): Promise<{ markdown: string; checksum: string }> {
     const markdownKey = `tenants/${data.tenantId}/documents/${data.documentId}/versions/${data.documentVersionId}/parsed/document.md`;
+    const structureKey = `tenants/${data.tenantId}/documents/${data.documentId}/versions/${data.documentVersionId}/parsed/structure.json`;
     const failedAssetFilenames: string[] = [];
     const uploadedAssets = await Promise.all(
       parsed.assets.map(async (asset, index) => {
@@ -419,6 +435,13 @@ export class DocumentIngestionProcessor extends WorkerHost {
     let normalizedMarkdown = parsed.markdown;
     for (const filename of failedAssetFilenames) {
       normalizedMarkdown = markAssetUnavailable(normalizedMarkdown, filename);
+      if (parsed.structure) {
+        for (const page of parsed.structure.pages) {
+          for (const element of page.elements) {
+            element.markdown = markAssetUnavailable(element.markdown, filename);
+          }
+        }
+      }
     }
     const markdownBytes = new TextEncoder().encode(normalizedMarkdown);
     const markdownSha256 = createHash('sha256').update(markdownBytes).digest('hex');
@@ -431,6 +454,23 @@ export class DocumentIngestionProcessor extends WorkerHost {
         parser: `${parsed.parserName}@${parsed.parserVersion}`,
       },
     });
+    const structureBytes = parsed.structure
+      ? new TextEncoder().encode(JSON.stringify(parsed.structure))
+      : null;
+    const structureSha256 = structureBytes
+      ? createHash('sha256').update(structureBytes).digest('hex')
+      : null;
+    if (structureBytes && structureSha256) {
+      await this.storage.putObject({
+        key: structureKey,
+        body: structureBytes,
+        contentType: 'application/json',
+        metadata: {
+          sha256: structureSha256,
+          parser: `${parsed.parserName}@${parsed.parserVersion}`,
+        },
+      });
+    }
 
     await this.dataSource.transaction(async (manager) => {
       await manager
@@ -471,6 +511,9 @@ export class DocumentIngestionProcessor extends WorkerHost {
         throw new IngestionCancelledError('Document ingestion was cancelled');
       lockedVersion.markdownBucket = this.storage.bucket;
       lockedVersion.markdownObjectKey = markdownKey;
+      lockedVersion.structureBucket = structureBytes ? this.storage.bucket : null;
+      lockedVersion.structureObjectKey = structureBytes ? structureKey : null;
+      lockedVersion.structureSha256 = structureSha256;
       lockedVersion.parserName = parsed.parserName;
       lockedVersion.parserVersion = parsed.parserVersion;
       lockedVersion.wordCount = countWords(normalizedMarkdown);
@@ -581,6 +624,7 @@ function checksumParsedDocument(parsed: ParsedDocument): string {
           sha256: createHash('sha256').update(asset.bytes).digest('hex'),
           anchor: asset.anchor,
         })),
+        structure: parsed.structure,
         parserName: parsed.parserName,
         parserVersion: parsed.parserVersion,
       }),

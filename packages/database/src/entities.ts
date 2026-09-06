@@ -593,6 +593,15 @@ export class DocumentVersionEntity {
   @Column('text', { name: 'markdown_object_key', nullable: true })
   markdownObjectKey!: string | null;
 
+  @Column('varchar', { name: 'structure_bucket', length: 255, nullable: true })
+  structureBucket!: string | null;
+
+  @Column('text', { name: 'structure_object_key', nullable: true })
+  structureObjectKey!: string | null;
+
+  @Column('char', { name: 'structure_sha256', length: 64, nullable: true })
+  structureSha256!: string | null;
+
   @Column('varchar', { name: 'parser_name', length: 128, nullable: true })
   parserName!: string | null;
 

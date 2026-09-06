@@ -34,6 +34,7 @@ import { ModelPricingService } from './model-pricing.service';
 import { ModelBudgetService } from './model-budget.service';
 import { DocumentAclProjectionProcessor } from './document-acl-projection.processor';
 import { DocumentSearchProjectionProcessor } from './document-search-projection.processor';
+import { TesseractPdfOcrService } from './tesseract-pdf-ocr.service';
 
 @Module({
   imports: [
@@ -97,6 +98,7 @@ import { DocumentSearchProjectionProcessor } from './document-search-projection.
     ModelMetricsService,
     ModelPricingService,
     ModelBudgetService,
+    TesseractPdfOcrService,
     SearchProjectionService,
   ],
 })

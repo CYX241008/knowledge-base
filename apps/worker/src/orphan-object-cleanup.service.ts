@@ -40,8 +40,13 @@ export class OrphanObjectCleanupService implements OnModuleInit, OnModuleDestroy
         .innerJoin('document', 'document', 'document.id = version.document_id')
         .select('version.sourceObjectKey', 'sourceObjectKey')
         .addSelect('version.markdownObjectKey', 'markdownObjectKey')
+        .addSelect('version.structureObjectKey', 'structureObjectKey')
         .where('document.purged_at IS NULL')
-        .getRawMany<{ sourceObjectKey: string; markdownObjectKey: string | null }>();
+        .getRawMany<{
+          sourceObjectKey: string;
+          markdownObjectKey: string | null;
+          structureObjectKey: string | null;
+        }>();
       const assetRows = await this.dataSource
         .getRepository(DocumentAssetEntity)
         .createQueryBuilder('asset')
@@ -54,6 +59,7 @@ export class OrphanObjectCleanupService implements OnModuleInit, OnModuleDestroy
       for (const row of versionRows) {
         referenced.add(row.sourceObjectKey);
         if (row.markdownObjectKey) referenced.add(row.markdownObjectKey);
+        if (row.structureObjectKey) referenced.add(row.structureObjectKey);
       }
       for (const row of assetRows) referenced.add(row.objectKey);
 

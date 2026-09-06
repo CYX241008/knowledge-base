@@ -323,7 +323,9 @@ erDiagram
   `source_bucket varchar(255)`、`source_object_key text`、
   `source_filename varchar(1024)`、`mime_type varchar(255)`、
   `size_bytes bigint`、`sha256 char(64)`、`markdown_bucket varchar(255)?`、
-  `markdown_object_key text?`、`parser_name varchar(128)?`、
+  `markdown_object_key text?`、`structure_bucket varchar(255)?`、
+  `structure_object_key text?`、`structure_sha256 char(64)?`、
+  `parser_name varchar(128)?`、
   `parser_version varchar(64)?`、`ingestion_status varchar(32)`、
   `word_count integer`、`error_code varchar(128)?`、`error_message text?`、
   `created_at`、`ready_at?`
