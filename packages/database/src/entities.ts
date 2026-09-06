@@ -487,6 +487,27 @@ export class TenantSystemSettingEntity {
   @Column('integer', { name: 'audit_retention_days', default: 365 })
   auditRetentionDays!: number;
 
+  @Column('numeric', {
+    name: 'model_daily_budget_usd',
+    precision: 20,
+    scale: 6,
+    default: 0,
+    transformer: numberFromNumeric,
+  })
+  modelDailyBudgetUsd!: number;
+
+  @Column('numeric', {
+    name: 'model_monthly_budget_usd',
+    precision: 20,
+    scale: 6,
+    default: 0,
+    transformer: numberFromNumeric,
+  })
+  modelMonthlyBudgetUsd!: number;
+
+  @Column('varchar', { name: 'model_budget_action', length: 16, default: 'warn' })
+  modelBudgetAction!: 'warn' | 'degrade' | 'reject';
+
   @Column('integer', { default: 1 })
   version!: number;
 
@@ -751,6 +772,34 @@ export class DocumentChunkEntity {
   createdAt!: Date;
 }
 
+@Entity('embedding_cache')
+@Index(['tenantId', 'embeddingModel', 'updatedAt'])
+export class EmbeddingCacheEntity {
+  @PrimaryColumn('uuid', { name: 'tenant_id' })
+  tenantId!: string;
+
+  @PrimaryColumn('char', { name: 'content_sha256', length: 64 })
+  contentSha256!: string;
+
+  @PrimaryColumn('varchar', { name: 'embedding_model', length: 128 })
+  embeddingModel!: string;
+
+  @PrimaryColumn('integer')
+  dimensions!: number;
+
+  @Column('vector', { length: DOCUMENT_EMBEDDING_DIMENSIONS })
+  embedding!: number[];
+
+  @Column('integer', { name: 'token_count' })
+  tokenCount!: number;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt!: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt!: Date;
+}
+
 @Entity('document_review_request')
 @Index(['tenantId', 'status', 'submittedAt'])
 @Index(['tenantId', 'documentId', 'submittedAt'])
@@ -971,6 +1020,25 @@ export class ModelUsageEventEntity {
   })
   estimatedCostUsd!: number;
 
+  @Column('numeric', {
+    name: 'input_cost_per_million_tokens',
+    precision: 20,
+    scale: 10,
+    transformer: numberFromNumeric,
+  })
+  inputCostPerMillionTokens!: number;
+
+  @Column('numeric', {
+    name: 'output_cost_per_million_tokens',
+    precision: 20,
+    scale: 10,
+    transformer: numberFromNumeric,
+  })
+  outputCostPerMillionTokens!: number;
+
+  @Column('varchar', { name: 'pricing_source', length: 255 })
+  pricingSource!: string;
+
   @Column('integer', { name: 'attempt_duration_ms' })
   attemptDurationMs!: number;
 
@@ -1012,11 +1080,71 @@ export class AnswerRunEntity {
   @Column('varchar', { name: 'error_code', length: 128, nullable: true })
   errorCode!: string | null;
 
+  @Column('varchar', { name: 'requested_model', length: 128, nullable: true })
+  requestedModel!: string | null;
+
+  @Column('varchar', { name: 'actual_model', length: 128, nullable: true })
+  actualModel!: string | null;
+
+  @Column('boolean', { default: false })
+  degraded!: boolean;
+
+  @Column('varchar', { name: 'degradation_reason', length: 128, nullable: true })
+  degradationReason!: string | null;
+
+  @Column('numeric', {
+    name: 'estimated_cost_usd',
+    precision: 20,
+    scale: 10,
+    default: 0,
+    transformer: numberFromNumeric,
+  })
+  estimatedCostUsd!: number;
+
   @CreateDateColumn({ name: 'started_at', type: 'timestamptz' })
   startedAt!: Date;
 
   @Column('timestamptz', { name: 'completed_at', nullable: true })
   completedAt!: Date | null;
+}
+
+@Entity('model_budget_alert')
+@Index(['tenantId', 'periodType', 'periodStart', 'thresholdPercent'], { unique: true })
+@Index(['tenantId', 'createdAt'])
+export class ModelBudgetAlertEntity {
+  @PrimaryColumn('uuid')
+  id!: string;
+
+  @Column('uuid', { name: 'tenant_id' })
+  tenantId!: string;
+
+  @Column('varchar', { name: 'period_type', length: 16 })
+  periodType!: 'day' | 'month';
+
+  @Column('timestamptz', { name: 'period_start' })
+  periodStart!: Date;
+
+  @Column('integer', { name: 'threshold_percent' })
+  thresholdPercent!: number;
+
+  @Column('numeric', {
+    name: 'usage_cost_usd',
+    precision: 20,
+    scale: 10,
+    transformer: numberFromNumeric,
+  })
+  usageCostUsd!: number;
+
+  @Column('numeric', {
+    name: 'budget_usd',
+    precision: 20,
+    scale: 6,
+    transformer: numberFromNumeric,
+  })
+  budgetUsd!: number;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt!: Date;
 }
 
 export type IngestionJobStatus = 'queued' | 'active' | 'completed' | 'failed' | 'cancelled';
@@ -1190,6 +1318,7 @@ export const databaseEntities = [
   DocumentSourceAnchorEntity,
   DocumentAssetEntity,
   DocumentChunkEntity,
+  EmbeddingCacheEntity,
   DocumentReviewRequestEntity,
   DocumentReviewActionEntity,
   ChatConversationEntity,
@@ -1197,6 +1326,7 @@ export const databaseEntities = [
   ChatCitationEntity,
   ModelUsageEventEntity,
   AnswerRunEntity,
+  ModelBudgetAlertEntity,
   IngestionJobEntity,
   IngestionStageEntity,
   OutboxEventEntity,

@@ -252,6 +252,11 @@ describe('reliable queue contracts', () => {
             assistantMessageId: null,
             status: 'failed',
             errorCode: 'model_timeout',
+            requestedModel: 'answer-model',
+            actualModel: null,
+            degraded: false,
+            degradationReason: null,
+            estimatedCostUsd: 0,
             startedAt: '2026-09-03T00:00:00.000Z',
             completedAt: '2026-09-03T00:00:01.000Z',
           },
@@ -270,7 +275,12 @@ describe('reliable queue contracts', () => {
         defaultPageSize: 10,
         feedbackEnabled: true,
       },
-      governance: { auditRetentionDays: 365 },
+      governance: {
+        auditRetentionDays: 365,
+        modelDailyBudgetUsd: 50,
+        modelMonthlyBudgetUsd: 1_000,
+        modelBudgetAction: 'degrade',
+      },
     };
     expect(UpdateSystemSettingsRequestSchema.safeParse(settings).success).toBe(true);
     expect(
@@ -282,7 +292,7 @@ describe('reliable queue contracts', () => {
     expect(
       UpdateSystemSettingsRequestSchema.safeParse({
         ...settings,
-        governance: { auditRetentionDays: 29 },
+        governance: { ...settings.governance, auditRetentionDays: 29 },
       }).success,
     ).toBe(false);
   });

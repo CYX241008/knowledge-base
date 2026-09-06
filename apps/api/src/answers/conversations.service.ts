@@ -90,6 +90,11 @@ export class ConversationsService {
                 assistantMessageId: run.assistantMessageId,
                 status: run.status,
                 errorCode: run.errorCode,
+                requestedModel: run.requestedModel,
+                actualModel: run.actualModel,
+                degraded: run.degraded,
+                degradationReason: run.degradationReason,
+                estimatedCostUsd: run.estimatedCostUsd,
                 startedAt: run.startedAt.toISOString(),
                 completedAt: run.completedAt?.toISOString() ?? null,
               }

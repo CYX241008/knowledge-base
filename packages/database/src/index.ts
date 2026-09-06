@@ -14,6 +14,9 @@ import { DocumentReview1754524800000 } from './migrations/1754524800000-document
 import { PermissionHardening1754611200000 } from './migrations/1754611200000-permission-hardening';
 import { AnswerRun1788364800000 } from './migrations/1788364800000-answer-run';
 import { ModelUsageEvent1788364900000 } from './migrations/1788364900000-model-usage-event';
+import { EmbeddingCache1788365000000 } from './migrations/1788365000000-embedding-cache';
+import { EmbeddingCacheBackfill1788365100000 } from './migrations/1788365100000-embedding-cache-backfill';
+import { ModelBudgetGovernance1788624000000 } from './migrations/1788624000000-model-budget-governance';
 
 export * from './entities';
 
@@ -31,6 +34,9 @@ export const databaseMigrations = [
   PermissionHardening1754611200000,
   AnswerRun1788364800000,
   ModelUsageEvent1788364900000,
+  EmbeddingCache1788365000000,
+  EmbeddingCacheBackfill1788365100000,
+  ModelBudgetGovernance1788624000000,
 ] as const;
 
 export function createDatabaseOptions(

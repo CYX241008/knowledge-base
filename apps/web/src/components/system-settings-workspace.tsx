@@ -364,11 +364,59 @@ function RuntimeSettingsView({
           max={3650}
           min={30}
           onChange={(auditRetentionDays) =>
-            onChange({ ...draft, governance: { auditRetentionDays } })
+            onChange({ ...draft, governance: { ...draft.governance, auditRetentionDays } })
           }
           step={30}
           value={draft.governance.auditRetentionDays}
         />
+        <NumberSetting
+          description="0 表示不限制；按配置时区的自然日累计模型成本。"
+          disabled={!settings.canEdit}
+          label="每日模型预算（USD）"
+          max={1_000_000_000}
+          min={0}
+          onChange={(modelDailyBudgetUsd) =>
+            onChange({ ...draft, governance: { ...draft.governance, modelDailyBudgetUsd } })
+          }
+          step={1}
+          value={draft.governance.modelDailyBudgetUsd}
+        />
+        <NumberSetting
+          description="0 表示不限制；按配置时区的自然月累计模型成本。"
+          disabled={!settings.canEdit}
+          label="每月模型预算（USD）"
+          max={1_000_000_000}
+          min={0}
+          onChange={(modelMonthlyBudgetUsd) =>
+            onChange({ ...draft, governance: { ...draft.governance, modelMonthlyBudgetUsd } })
+          }
+          step={10}
+          value={draft.governance.modelMonthlyBudgetUsd}
+        />
+        <label className="settings-number-field">
+          <span>
+            <strong>超预算策略</strong>
+            <small>告警继续、自动降级，或拒绝新的付费模型调用。</small>
+          </span>
+          <select
+            disabled={!settings.canEdit}
+            onChange={(event) =>
+              onChange({
+                ...draft,
+                governance: {
+                  ...draft.governance,
+                  modelBudgetAction: event.target
+                    .value as UpdateSystemSettingsRequest['governance']['modelBudgetAction'],
+                },
+              })
+            }
+            value={draft.governance.modelBudgetAction}
+          >
+            <option value="warn">仅告警</option>
+            <option value="degrade">自动降级</option>
+            <option value="reject">拒绝调用</option>
+          </select>
+        </label>
         <label className="settings-toggle-row">
           <span>
             <strong>收集检索反馈</strong>
@@ -490,7 +538,29 @@ function RuntimeTable({ runtime }: { runtime: SystemRuntimeConfiguration }): Rea
     ['Embedding 限额', formatQuota(runtime.embeddingTokensPerMinute, 'TPM')],
     ['Chat 限额', formatQuota(runtime.chatTokensPerMinute, 'TPM')],
     ['Rerank 限额', formatQuota(runtime.rerankTokensPerMinute, 'TPM')],
+    ['Tokenizer', runtime.tokenizerEncoding],
     ['回答输出上限', `${runtime.chatMaxOutputTokens.toLocaleString('zh-CN')} tokens`],
+    ['模型上下文窗口', `${runtime.chatContextWindowTokens.toLocaleString('zh-CN')} tokens`],
+    ['证据 Token 上限', `${runtime.ragMaxContextTokens.toLocaleString('zh-CN')} tokens`],
+    ['上下文安全余量', `${runtime.ragContextSafetyTokens.toLocaleString('zh-CN')} tokens`],
+    ['重排候选上限', runtime.rerankCandidateLimit.toLocaleString('zh-CN')],
+    ['重排 Token 上限', `${runtime.rerankMaxTokens.toLocaleString('zh-CN')} tokens`],
+    ['单文档分片上限', runtime.maxChunksPerDocument.toLocaleString('zh-CN')],
+    ['Embedding 批量条数', runtime.embeddingBatchMaxInputs.toLocaleString('zh-CN')],
+    ['Embedding 批量 Token', runtime.embeddingBatchMaxTokens.toLocaleString('zh-CN')],
+    ['单文档最大分片', runtime.documentMaxChunks.toLocaleString('zh-CN')],
+    ['单次成本上限', formatUsd(runtime.modelMaxCallCostUsd)],
+    ['模型价格规则', runtime.modelPricingRuleCount.toLocaleString('zh-CN')],
+    ['预算时区偏移', `${runtime.modelBudgetTimezoneOffsetMinutes} 分钟`],
+    ['交互并发', runtime.modelInteractiveMaxConcurrency.toLocaleString('zh-CN')],
+    ['交互排队', runtime.modelInteractiveMaxQueueSize.toLocaleString('zh-CN')],
+    ['批处理并发', runtime.modelBatchMaxConcurrency.toLocaleString('zh-CN')],
+    ['批处理排队', runtime.modelBatchMaxQueueSize.toLocaleString('zh-CN')],
+    ['降级模型', runtime.chatFallbackModel ?? '未配置'],
+    ['降级输出上限', `${runtime.chatDegradedMaxOutputTokens.toLocaleString('zh-CN')} tokens`],
+    ['历史消息上限', runtime.chatHistoryMaxMessages.toLocaleString('zh-CN')],
+    ['历史 Token 上限', `${runtime.chatHistoryMaxTokens.toLocaleString('zh-CN')} tokens`],
+    ['降级证据上限', `${runtime.ragDegradedContextTokens.toLocaleString('zh-CN')} tokens`],
     ['上传上限', formatBytes(runtime.maxUploadSizeBytes)],
     ['会话保留', `${runtime.chatRetentionDays} 天`],
     ['检索索引', runtime.elasticsearchIndex],
@@ -696,7 +766,9 @@ function QualityView({
           value={formatPercent(data.feedback.helpfulRate)}
         />
         <QualityMetric
-          detail={`${data.models.totalTokens.toLocaleString('zh-CN')} tokens`}
+          detail={`今日 ${formatUsd(data.models.budget.daily.usedUsd)} / ${formatBudgetLimit(
+            data.models.budget.daily.budgetUsd,
+          )}`}
           label="租户估算成本"
           value={formatUsd(data.models.estimatedCostUsd)}
         />
@@ -722,6 +794,39 @@ function QualityView({
           ) : (
             <p className="quality-empty">暂无反馈原因数据</p>
           )}
+        </section>
+        <section className="quality-reasons">
+          <div className="settings-section-heading compact">
+            <div>
+              <h2>模型预算</h2>
+              <p>策略：{budgetActionLabel(data.models.budget.action)}</p>
+            </div>
+            <CircleDollarSign size={18} />
+          </div>
+          <ol>
+            <li>
+              <span>今日</span>
+              <strong>
+                {formatUsd(data.models.budget.daily.usedUsd)} /{' '}
+                {formatBudgetLimit(data.models.budget.daily.budgetUsd)}
+              </strong>
+            </li>
+            <li>
+              <span>本月</span>
+              <strong>
+                {formatUsd(data.models.budget.monthly.usedUsd)} /{' '}
+                {formatBudgetLimit(data.models.budget.monthly.budgetUsd)}
+              </strong>
+            </li>
+            {data.models.budget.alerts.slice(0, 3).map((alert) => (
+              <li key={alert.id}>
+                <span>
+                  {alert.periodType === 'day' ? '日预算' : '月预算'} {alert.thresholdPercent}%
+                </span>
+                <strong>{formatDate(alert.createdAt)}</strong>
+              </li>
+            ))}
+          </ol>
         </section>
         <section className="model-operations">
           <div className="settings-section-heading compact">
@@ -761,7 +866,7 @@ function QualityView({
                 ) : (
                   <tr>
                     <td className="table-empty" colSpan={6}>
-                      当前实例尚无模型调用
+                      当前时间范围内尚无模型调用
                     </td>
                   </tr>
                 )}
@@ -927,6 +1032,16 @@ function formatDecimal(value: number): string {
 
 function formatUsd(value: number): string {
   return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
+}
+
+function formatBudgetLimit(value: number): string {
+  return value === 0 ? '不限额' : formatUsd(value);
+}
+
+function budgetActionLabel(value: 'warn' | 'degrade' | 'reject'): string {
+  if (value === 'degrade') return '自动降级';
+  if (value === 'reject') return '拒绝调用';
+  return '仅告警';
 }
 
 class ApiError extends Error {

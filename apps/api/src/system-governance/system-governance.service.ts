@@ -21,9 +21,11 @@ import {
   TenantSystemSettingEntity,
 } from '@knowledge-base/database';
 import { DataSource, In } from 'typeorm';
+import { parseModelPricingCatalog } from '@knowledge-base/model-gateway';
 import { AccessControlService } from '../access-control/access-control.service';
 import type { AuthContext } from '../auth/auth-context';
 import { ModelMetricsService } from '../observability/model-metrics.service';
+import { ModelBudgetService } from '../observability/model-budget.service';
 
 const defaultRetrievalSettings: SystemRetrievalSettings = {
   candidateLimit: 200,
@@ -31,8 +33,19 @@ const defaultRetrievalSettings: SystemRetrievalSettings = {
   defaultPageSize: 10,
   feedbackEnabled: true,
 };
+const defaultGovernanceSettings = {
+  auditRetentionDays: 365,
+  modelDailyBudgetUsd: 0,
+  modelMonthlyBudgetUsd: 0,
+  modelBudgetAction: 'warn' as const,
+};
 
-type EffectiveSettings = SystemRetrievalSettings & { auditRetentionDays: number };
+type EffectiveSettings = SystemRetrievalSettings & {
+  auditRetentionDays: number;
+  modelDailyBudgetUsd: number;
+  modelMonthlyBudgetUsd: number;
+  modelBudgetAction: 'warn' | 'degrade' | 'reject';
+};
 
 @Injectable()
 export class SystemGovernanceService {
@@ -41,6 +54,7 @@ export class SystemGovernanceService {
     @Inject(ConfigService) private readonly config: ConfigService<ServerEnv, true>,
     @Inject(AccessControlService) private readonly accessControl: AccessControlService,
     @Inject(ModelMetricsService) private readonly modelMetrics: ModelMetricsService,
+    @Inject(ModelBudgetService) private readonly modelBudget: ModelBudgetService,
   ) {}
 
   async effectiveSettings(tenantId: string): Promise<EffectiveSettings> {
@@ -54,8 +68,14 @@ export class SystemGovernanceService {
           defaultPageSize: entity.searchPageSize,
           feedbackEnabled: entity.feedbackEnabled,
           auditRetentionDays: entity.auditRetentionDays,
+          modelDailyBudgetUsd: entity.modelDailyBudgetUsd,
+          modelMonthlyBudgetUsd: entity.modelMonthlyBudgetUsd,
+          modelBudgetAction: entity.modelBudgetAction,
         }
-      : { ...defaultRetrievalSettings, auditRetentionDays: 365 };
+      : {
+          ...defaultRetrievalSettings,
+          ...defaultGovernanceSettings,
+        };
   }
 
   async preferences(tenantId: string): Promise<SearchPreferencesResponse> {
@@ -78,7 +98,12 @@ export class SystemGovernanceService {
         defaultPageSize: effective.defaultPageSize,
         feedbackEnabled: effective.feedbackEnabled,
       },
-      governance: { auditRetentionDays: effective.auditRetentionDays },
+      governance: {
+        auditRetentionDays: effective.auditRetentionDays,
+        modelDailyBudgetUsd: effective.modelDailyBudgetUsd,
+        modelMonthlyBudgetUsd: effective.modelMonthlyBudgetUsd,
+        modelBudgetAction: effective.modelBudgetAction,
+      },
       runtime: {
         modelProvider: this.config.getOrThrow('MODEL_PROVIDER'),
         embeddingModel: this.config.getOrThrow('EMBEDDING_MODEL'),
@@ -95,7 +120,33 @@ export class SystemGovernanceService {
         embeddingTokensPerMinute: this.config.getOrThrow('MODEL_EMBEDDING_TOKENS_PER_MINUTE'),
         chatTokensPerMinute: this.config.getOrThrow('MODEL_CHAT_TOKENS_PER_MINUTE'),
         rerankTokensPerMinute: this.config.getOrThrow('MODEL_RERANK_TOKENS_PER_MINUTE'),
+        tokenizerEncoding: this.config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
         chatMaxOutputTokens: this.config.getOrThrow('CHAT_MAX_OUTPUT_TOKENS'),
+        chatContextWindowTokens: this.config.getOrThrow('CHAT_CONTEXT_WINDOW_TOKENS'),
+        ragMaxContextTokens: this.config.getOrThrow('RAG_MAX_CONTEXT_TOKENS'),
+        ragContextSafetyTokens: this.config.getOrThrow('RAG_CONTEXT_SAFETY_TOKENS'),
+        rerankCandidateLimit: this.config.getOrThrow('RAG_RERANK_CANDIDATE_LIMIT'),
+        rerankMaxTokens: this.config.getOrThrow('RAG_RERANK_MAX_TOKENS'),
+        maxChunksPerDocument: this.config.getOrThrow('RAG_MAX_CHUNKS_PER_DOCUMENT'),
+        embeddingBatchMaxInputs: this.config.getOrThrow('EMBEDDING_BATCH_MAX_INPUTS'),
+        embeddingBatchMaxTokens: this.config.getOrThrow('EMBEDDING_BATCH_MAX_TOKENS'),
+        documentMaxChunks: this.config.getOrThrow('DOCUMENT_MAX_CHUNKS'),
+        modelMaxCallCostUsd: this.config.getOrThrow('MODEL_MAX_CALL_COST_USD'),
+        modelPricingRuleCount: Object.keys(
+          parseModelPricingCatalog(this.config.getOrThrow('MODEL_PRICING_JSON')),
+        ).length,
+        modelBudgetTimezoneOffsetMinutes: this.config.getOrThrow(
+          'MODEL_BUDGET_TIMEZONE_OFFSET_MINUTES',
+        ),
+        modelInteractiveMaxConcurrency: this.config.getOrThrow('MODEL_INTERACTIVE_MAX_CONCURRENCY'),
+        modelInteractiveMaxQueueSize: this.config.getOrThrow('MODEL_INTERACTIVE_MAX_QUEUE_SIZE'),
+        modelBatchMaxConcurrency: this.config.getOrThrow('MODEL_BATCH_MAX_CONCURRENCY'),
+        modelBatchMaxQueueSize: this.config.getOrThrow('MODEL_BATCH_MAX_QUEUE_SIZE'),
+        chatFallbackModel: this.config.get('CHAT_FALLBACK_MODEL') ?? null,
+        chatDegradedMaxOutputTokens: this.config.getOrThrow('CHAT_DEGRADED_MAX_OUTPUT_TOKENS'),
+        chatHistoryMaxTokens: this.config.getOrThrow('CHAT_HISTORY_MAX_TOKENS'),
+        chatHistoryMaxMessages: this.config.getOrThrow('CHAT_HISTORY_MAX_MESSAGES'),
+        ragDegradedContextTokens: this.config.getOrThrow('RAG_DEGRADED_CONTEXT_TOKENS'),
         ragMinRelevance: this.config.getOrThrow('RAG_MIN_RELEVANCE'),
         maxUploadSizeBytes: this.config.getOrThrow('MAX_UPLOAD_SIZE_BYTES'),
         chatRetentionDays: this.config.getOrThrow('CHAT_RETENTION_DAYS'),
@@ -120,7 +171,7 @@ export class SystemGovernanceService {
       });
       const before = existing
         ? serializeSettings(existing)
-        : { ...defaultRetrievalSettings, auditRetentionDays: 365 };
+        : { ...defaultRetrievalSettings, ...defaultGovernanceSettings };
       const entity = repository.create({
         ...existing,
         tenantId: auth.tenantId,
@@ -129,6 +180,9 @@ export class SystemGovernanceService {
         searchPageSize: input.retrieval.defaultPageSize,
         feedbackEnabled: input.retrieval.feedbackEnabled,
         auditRetentionDays: input.governance.auditRetentionDays,
+        modelDailyBudgetUsd: input.governance.modelDailyBudgetUsd,
+        modelMonthlyBudgetUsd: input.governance.modelMonthlyBudgetUsd,
+        modelBudgetAction: input.governance.modelBudgetAction,
         version: (existing?.version ?? 1) + 1,
         updatedBy: auth.userId,
       });
@@ -238,6 +292,7 @@ export class SystemGovernanceService {
     const feedbackTotal = Number(feedback?.total ?? 0);
     const helpful = Number(feedback?.helpful ?? 0);
     const modelSnapshot = await this.modelMetrics.usageForTenant(auth.tenantId, days);
+    const budget = await this.modelBudget.status(auth.tenantId);
     const operations = modelSnapshot.operations.map((operation) => ({
       operation: operation.operation,
       model: operation.model,
@@ -279,6 +334,27 @@ export class SystemGovernanceService {
           operations.reduce((sum, item) => sum + item.estimatedCostUsd, 0),
           6,
         ),
+        budget: {
+          action: budget.assessment.action,
+          daily: {
+            usedUsd: budget.assessment.daily.usedUsd,
+            budgetUsd: budget.assessment.daily.budgetUsd,
+            ratio: budget.assessment.daily.ratio,
+          },
+          monthly: {
+            usedUsd: budget.assessment.monthly.usedUsd,
+            budgetUsd: budget.assessment.monthly.budgetUsd,
+            ratio: budget.assessment.monthly.ratio,
+          },
+          alerts: budget.alerts.map((alert) => ({
+            id: alert.id,
+            periodType: alert.periodType,
+            thresholdPercent: alert.thresholdPercent,
+            usageCostUsd: alert.usageCostUsd,
+            budgetUsd: alert.budgetUsd,
+            createdAt: alert.createdAt.toISOString(),
+          })),
+        },
         operations,
       },
     };
@@ -341,6 +417,9 @@ function serializeSettings(entity: TenantSystemSettingEntity): EffectiveSettings
     defaultPageSize: entity.searchPageSize,
     feedbackEnabled: entity.feedbackEnabled,
     auditRetentionDays: entity.auditRetentionDays,
+    modelDailyBudgetUsd: entity.modelDailyBudgetUsd,
+    modelMonthlyBudgetUsd: entity.modelMonthlyBudgetUsd,
+    modelBudgetAction: entity.modelBudgetAction,
   };
 }
 

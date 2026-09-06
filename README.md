@@ -21,7 +21,7 @@ pnpm dev
 
 处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
 
-检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合并重排。重排后的候选会按内容哈希删除完全重复项；相邻且高度相似、来源一致的分片会合并；非相邻的高度相似分片只在来源一致时保留高分项，不同来源继续保留。最后使用 MMR 降低重复候选的优先级，不会由 MMR 直接删除候选。整个整理过程在本地复用已有分片向量，不会增加模型调用。`RAG_NEAR_DUPLICATE_THRESHOLD` 控制高度相似判定，默认 `0.92`；`RAG_MMR_LAMBDA` 控制相关性与多样性的权衡，默认 `0.7`。两个召回查询都会下推租户、有效主体和 `published` 状态过滤，最终只返回逻辑文档当前发布版本。待审新版本不会替换或隐藏旧发布版本。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
+检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合。进入付费 Reranker 前会先按内容哈希删除完全重复项、限制单文档分片数，并按独立候选数和 Token 预算打包；重排后再合并相邻分片、过滤同来源近重复项并使用 MMR 降低冗余。`RAG_RERANK_CANDIDATE_LIMIT`、`RAG_RERANK_MAX_TOKENS`、`RAG_MAX_CHUNKS_PER_DOCUMENT` 控制重排成本，`RAG_NEAR_DUPLICATE_THRESHOLD` 和 `RAG_MMR_LAMBDA` 控制后续整理。查询只使用与当前 `EMBEDDING_MODEL` 一致的向量，避免同维度模型切换时混用不兼容向量。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
 
 版本审核绑定不可变的 `document_version`。文档管理员可以提交或撤回待审版本；拥有 `documents.review` 的审核员可以查看租户待办、批准或驳回。批准会在同一 PostgreSQL 事务中结案审核、切换发布版本、记录审计并写入搜索投影 Outbox。
 
@@ -31,9 +31,13 @@ pnpm dev
 
 外部模型适配器提供每分钟请求上限、全局/租户/用户/operation-model TPM 预留与结算、并发队列、指数退避、三态熔断、超时和取消传播。每次 provider attempt 都独立占用 RPM/TPM；成功后按实际 usage 结算，usage 缺失或请求失败时保留保守估算。熔断恢复窗口结束后只放行有限的 half-open 探针，达到连续成功阈值后才恢复正常流量，探针失败会立即重新打开熔断器。启用 Redis 模型配额后，API 和 Worker 多副本共享配额与熔断状态。模型调用事件持久化到 PostgreSQL，租户质量页按所选时间窗口汇总 API 与 Worker 的 token 用量和估算成本；`GET /api/metrics/models` 仍提供当前 API 进程的实时运行快照。当前向量列固定为 384 维；健康检查会同时验证 PostgreSQL 列类型和模型探针，生产环境强制设置 `MODEL_VALIDATE_ON_STARTUP=true`。
 
+模型 Token 计算统一使用 `js-tiktoken`。已知模型自动选择 encoding，自定义 OpenAI-compatible 模型回退到 `MODEL_TOKENIZER_ENCODING`。问答证据预算由模型上下文窗口扣除提示词、问题、输出上限和安全余量后计算，`RAG_MAX_CONTEXT_TOKENS` 再设置成本硬上限；`RAG_MAX_CONTEXT_CHARACTERS` 仅保留为兼容配置。最终引用只包含实际进入 Prompt 的证据。文档摄取使用 `embedding_cache` 按租户、内容 SHA256、模型和维度复用向量，每个成功批次立即落库；批次同时受条数和 Token 上限约束，Worker 重试和全量重建会复用已经完成的向量。
+
+`MODEL_PRICING_JSON` 按 `operation:model` 配置价格，并支持 `chat:*`、`*:model` 和 `*:*` 通配规则；每条用量事件会保存当时采用的输入/输出单价和规则来源，历史成本不会因后续调价改变。租户可配置日预算、月预算以及 `warn`、`degrade`、`reject` 策略，70%/90%/100% 等阈值通过 `MODEL_BUDGET_ALERT_THRESHOLDS` 配置。降级策略会缩短历史和证据、降低输出上限、切换 `CHAT_FALLBACK_MODEL`，仍超限时使用本地抽取式回答。API 使用交互容量池，Worker 使用独立批处理容量池，批量摄取不会占满在线问答的本地并发队列。
+
 API 身份只从服务端鉴权上下文取得，客户端提交的 `tenantId`、`createdBy` 和检索 `principalIds` 不参与授权。开发默认 `AUTH_MODE=demo`，固定身份来自 `AUTH_DEMO_*`；生产环境强制 `AUTH_MODE=jwt`，并通过 `AUTH_JWT_JWKS_URL`、issuer、audience 和声明名校验 Bearer JWT。租户级能力保存在 `permissionKeys`，资源 ACL 主体保存在 `principalIds`，停用的租户或用户会被拒绝。新文档默认仅创建者可读，文档直接 ACL 与空间/文件夹继承 ACL 分开维护。完整设计见 `docs/access-control-design.md`。
 
-知识问答工具栏可以新建、读取和删除当前用户的会话；会话消息与引用保存在 PostgreSQL。`CHAT_RETENTION_DAYS` 控制保留天数，后台清理默认每 6 小时执行一次。流式回答可由停止按钮或客户端断连取消，取消信号会继续传递到检索、重排和外部 Chat 请求。
+知识问答工具栏可以新建、读取和删除当前用户的会话；会话消息与引用保存在 PostgreSQL。最近的对话历史会按 `CHAT_HISTORY_MAX_MESSAGES` 和 `CHAT_HISTORY_MAX_TOKENS` 双重限制加入 Prompt，并优先保留最新消息。`CHAT_RETENTION_DAYS` 控制保留天数，后台清理默认每 6 小时执行一次。流式回答可由停止按钮或客户端断连取消，取消信号会继续传递到检索、重排和外部 Chat 请求。
 
 PDF 最多 500 页；PDF/DOCX 最多 500 张图片、单图 10 MB、图片总量 50 MB。XLSX 最多 100 个 Sheet、每 Sheet 50,000 行和 256 列、整份 500,000 个单元格；PPTX 最多 500 页和 250,000 个表格单元格。Office 包最多 10,000 个条目、解压后 200 MB，输出 Markdown 最多 5,000,000 字符，各解析子步骤最长 60 秒。ExcelJS 或自研 PPTX OOXML 路径出现兼容性错误时会降级到 officeparser，资源限制错误不会降级。
 

@@ -1,17 +1,18 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import type { ServerEnv } from '@knowledge-base/config';
 import { ModelUsageEventEntity } from '@knowledge-base/database';
 import type { ModelCallObserver } from '@knowledge-base/model-gateway';
 import { logEvent } from '@knowledge-base/observability';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
+import { ModelPricingService } from './model-pricing.service';
+import { ModelBudgetService } from './model-budget.service';
 
 @Injectable()
 export class ModelMetricsService {
   constructor(
     @Inject(DataSource) private readonly dataSource: DataSource,
-    @Inject(ConfigService) private readonly config: ConfigService<ServerEnv, true>,
+    @Inject(ModelPricingService) private readonly pricing: ModelPricingService,
+    @Inject(ModelBudgetService) private readonly budget: ModelBudgetService,
   ) {}
 
   readonly observe: ModelCallObserver = async (metric) => {
@@ -28,8 +29,7 @@ export class ModelMetricsService {
               usageSource: metric.usage ? ('provider' as const) : ('estimated' as const),
             },
           ];
-    const inputRate = this.config.getOrThrow('MODEL_INPUT_COST_PER_MILLION_TOKENS');
-    const outputRate = this.config.getOrThrow('MODEL_OUTPUT_COST_PER_MILLION_TOKENS');
+    const price = this.pricing.resolve(metric.operation, metric.model);
     const callId = metric.callId ?? randomUUID();
     try {
       await this.dataSource.getRepository(ModelUsageEventEntity).insert(
@@ -51,8 +51,12 @@ export class ModelMetricsService {
           outputTokens: attempt.usage.outputTokens,
           totalTokens: attempt.usage.totalTokens,
           estimatedCostUsd:
-            (attempt.usage.inputTokens * inputRate + attempt.usage.outputTokens * outputRate) /
+            (attempt.usage.inputTokens * price.inputCostPerMillionTokens +
+              attempt.usage.outputTokens * price.outputCostPerMillionTokens) /
             1_000_000,
+          inputCostPerMillionTokens: price.inputCostPerMillionTokens,
+          outputCostPerMillionTokens: price.outputCostPerMillionTokens,
+          pricingSource: price.source,
           attemptDurationMs: attempt.durationMs,
           callDurationMs: metric.durationMs,
           firstTokenDurationMs: metric.firstTokenDurationMs ?? null,
@@ -64,6 +68,16 @@ export class ModelMetricsService {
         callId,
         message: error instanceof Error ? error.message : String(error),
       });
+      return;
+    }
+    if (metric.context?.tenantId) {
+      await this.budget.recordThresholds(metric.context.tenantId).catch((error) =>
+        logEvent('model.budget_alert_failed', {
+          callId,
+          tenantId: metric.context?.tenantId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
     }
   };
 }

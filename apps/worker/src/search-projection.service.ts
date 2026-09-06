@@ -7,8 +7,13 @@ import {
   DocumentEntity,
   DocumentSourceAnchorEntity,
   DocumentVersionEntity,
+  EmbeddingCacheEntity,
 } from '@knowledge-base/database';
-import { createEmbeddingGateway, type ModelGateway } from '@knowledge-base/model-gateway';
+import {
+  countModelTextTokens,
+  createEmbeddingGateway,
+  type ModelGateway,
+} from '@knowledge-base/model-gateway';
 import { ObjectStorage } from '@knowledge-base/object-storage';
 import {
   CHUNKER_VERSION,
@@ -17,16 +22,23 @@ import {
   type SourceAnchor,
 } from '@knowledge-base/rag';
 import { createHash } from 'node:crypto';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { OBJECT_STORAGE } from './worker.constants';
 import { ModelQuotaService } from './model-quota.service';
 import { ModelMetricsService } from './model-metrics.service';
+import { ModelBudgetService } from './model-budget.service';
 
 type BuildChunksInput = {
   document: DocumentEntity;
   version: DocumentVersionEntity;
   markdown: string;
   anchors: SourceAnchor[];
+};
+
+type EmbeddingBatchItem = {
+  content: string;
+  contentSha256: string;
+  tokenCount: number;
 };
 
 @Injectable()
@@ -47,8 +59,11 @@ export class SearchProjectionService {
     private readonly anchorRepository: Repository<DocumentSourceAnchorEntity>,
     @InjectRepository(DocumentChunkEntity)
     private readonly chunkRepository: Repository<DocumentChunkEntity>,
+    @InjectRepository(EmbeddingCacheEntity)
+    private readonly embeddingCacheRepository: Repository<EmbeddingCacheEntity>,
     @Inject(ModelQuotaService) private readonly modelQuota: ModelQuotaService,
     @Inject(ModelMetricsService) private readonly modelMetrics: ModelMetricsService,
+    @Inject(ModelBudgetService) private readonly modelBudget: ModelBudgetService,
   ) {
     this.embeddingModel = this.config.getOrThrow('EMBEDDING_MODEL');
     this.embedding = createEmbeddingGateway({
@@ -57,8 +72,8 @@ export class SearchProjectionService {
       apiKey: this.config.get('MODEL_API_KEY'),
       dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
       timeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
-      maxConcurrency: this.config.getOrThrow('MODEL_MAX_CONCURRENCY'),
-      maxQueueSize: this.config.getOrThrow('MODEL_MAX_QUEUE_SIZE'),
+      maxConcurrency: this.config.getOrThrow('MODEL_BATCH_MAX_CONCURRENCY'),
+      maxQueueSize: this.config.getOrThrow('MODEL_BATCH_MAX_QUEUE_SIZE'),
       requestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
       tokenRateLimits: {
         global: this.config.getOrThrow('MODEL_GLOBAL_TOKENS_PER_MINUTE'),
@@ -70,6 +85,7 @@ export class SearchProjectionService {
           rerank: this.config.getOrThrow('MODEL_RERANK_TOKENS_PER_MINUTE'),
         },
       },
+      tokenizerEncoding: this.config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
       rateLimiter: this.modelQuota.rateLimiter,
       circuitBreaker: this.modelQuota.circuitBreaker,
       maxRetries: this.config.getOrThrow('MODEL_MAX_RETRIES'),
@@ -93,29 +109,84 @@ export class SearchProjectionService {
   }
 
   async buildChunks(input: BuildChunksInput): Promise<{ count: number; checksum: string }> {
-    const chunks = chunkMarkdown(input.version.id, input.markdown, input.anchors);
+    const dimensions = this.config.getOrThrow('EMBEDDING_DIMENSIONS');
+    const tokenizerEncoding = this.config.getOrThrow('MODEL_TOKENIZER_ENCODING');
+    const chunks = chunkMarkdown(input.version.id, input.markdown, input.anchors).map((chunk) => ({
+      ...chunk,
+      tokenCount: countModelTextTokens(this.embeddingModel, chunk.content, tokenizerEncoding),
+    }));
     if (chunks.length === 0) throw new Error('Normalized Markdown produced no searchable chunks');
-    const vectors: number[][] = [];
-    for (let offset = 0; offset < chunks.length; offset += 64) {
-      vectors.push(
-        ...(await this.embedding.embed({
-          model: this.embeddingModel,
-          inputs: chunks.slice(offset, offset + 64).map((chunk) => chunk.content),
-          dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
-          context: {
-            tenantId: input.document.tenantId,
-            runId: input.version.id,
-            source: 'ingestion',
-          },
-        })),
+    if (chunks.length > this.config.getOrThrow('DOCUMENT_MAX_CHUNKS')) {
+      throw new Error(
+        `Document produced ${chunks.length} chunks, exceeding the configured maximum`,
       );
     }
-    if (vectors.length !== chunks.length)
-      throw new Error('Embedding result count does not match chunks');
+
+    const uniqueChunks = [
+      ...new Map(chunks.map((chunk) => [chunk.contentSha256, chunk] as const)).values(),
+    ];
+    const cached = await this.embeddingCacheRepository.find({
+      where: {
+        tenantId: input.document.tenantId,
+        embeddingModel: this.embeddingModel,
+        dimensions,
+        contentSha256: In(uniqueChunks.map((chunk) => chunk.contentSha256)),
+      },
+    });
+    const vectorsByHash = new Map(
+      cached
+        .filter((entry) => entry.embedding.length === dimensions)
+        .map((entry) => [entry.contentSha256.trim(), entry.embedding] as const),
+    );
+    const missingChunks = uniqueChunks.filter((chunk) => !vectorsByHash.has(chunk.contentSha256));
+    const batches = buildEmbeddingBatches(
+      missingChunks,
+      this.config.getOrThrow('EMBEDDING_BATCH_MAX_INPUTS'),
+      this.config.getOrThrow('EMBEDDING_BATCH_MAX_TOKENS'),
+    );
+    for (const batch of batches) {
+      await this.modelBudget.assertEmbeddingAllowed(
+        input.document.tenantId,
+        this.embeddingModel,
+        batch.reduce((sum, chunk) => sum + chunk.tokenCount, 0),
+      );
+      const vectors = await this.embedding.embed({
+        model: this.embeddingModel,
+        inputs: batch.map((chunk) => chunk.content),
+        dimensions,
+        context: {
+          tenantId: input.document.tenantId,
+          runId: input.version.id,
+          source: 'ingestion',
+        },
+      });
+      if (vectors.length !== batch.length)
+        throw new Error('Embedding result count does not match batch');
+      const cacheRecords = batch.map((chunk, index) => {
+        const vector = vectors[index];
+        if (!vector) throw new Error(`Embedding missing for content ${chunk.contentSha256}`);
+        vectorsByHash.set(chunk.contentSha256, vector);
+        return this.embeddingCacheRepository.create({
+          tenantId: input.document.tenantId,
+          contentSha256: chunk.contentSha256,
+          embeddingModel: this.embeddingModel,
+          dimensions,
+          embedding: vector,
+          tokenCount: chunk.tokenCount,
+        });
+      });
+      await this.embeddingCacheRepository.upsert(cacheRecords, [
+        'tenantId',
+        'contentSha256',
+        'embeddingModel',
+        'dimensions',
+      ]);
+    }
+
     const principalIds = input.document.accessPrincipalIds;
     if (principalIds.length === 0) throw new Error('Document has no access principals');
-    const records = chunks.map((chunk, index) => {
-      const vector = vectors[index];
+    const records = chunks.map((chunk) => {
+      const vector = vectorsByHash.get(chunk.contentSha256);
       if (!vector) throw new Error(`Embedding missing for chunk ${chunk.id}`);
       return this.chunkRepository.create({
         id: chunk.id,
@@ -148,7 +219,14 @@ export class SearchProjectionService {
       await manager.getRepository(DocumentChunkEntity).save(records, { chunk: 100 });
     });
     const checksum = createHash('sha256')
-      .update(chunks.map((chunk) => `${chunk.id}:${chunk.contentSha256}`).join('\n'))
+      .update(
+        [
+          this.embeddingModel,
+          String(dimensions),
+          CHUNKER_VERSION,
+          ...chunks.map((chunk) => `${chunk.id}:${chunk.contentSha256}`),
+        ].join('\n'),
+      )
       .digest('hex');
     return { count: chunks.length, checksum };
   }
@@ -237,6 +315,37 @@ export class SearchProjectionService {
     }
     return { versions: versions.length, chunks: chunkCount };
   }
+}
+
+export function buildEmbeddingBatches<T extends EmbeddingBatchItem>(
+  items: readonly T[],
+  maxInputs: number,
+  maxTokens: number,
+): T[][] {
+  const boundedMaxInputs = Math.max(1, Math.floor(maxInputs));
+  const boundedMaxTokens = Math.max(1, Math.floor(maxTokens));
+  const batches: T[][] = [];
+  let batch: T[] = [];
+  let batchTokens = 0;
+  for (const item of items) {
+    if (item.tokenCount > boundedMaxTokens) {
+      throw new Error(
+        `Embedding input requires ${item.tokenCount} tokens, exceeding the batch limit`,
+      );
+    }
+    if (
+      batch.length > 0 &&
+      (batch.length >= boundedMaxInputs || batchTokens + item.tokenCount > boundedMaxTokens)
+    ) {
+      batches.push(batch);
+      batch = [];
+      batchTokens = 0;
+    }
+    batch.push(item);
+    batchTokens += item.tokenCount;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
 }
 
 export function isPublishedSearchVersion(

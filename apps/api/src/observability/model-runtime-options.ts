@@ -14,8 +14,8 @@ export function modelRuntimeOptions(
   circuitBreaker?: ModelCircuitBreaker,
 ): ModelResilienceOptions & { includeUsage: boolean } {
   return {
-    maxConcurrency: config.getOrThrow('MODEL_MAX_CONCURRENCY'),
-    maxQueueSize: config.getOrThrow('MODEL_MAX_QUEUE_SIZE'),
+    maxConcurrency: config.getOrThrow('MODEL_INTERACTIVE_MAX_CONCURRENCY'),
+    maxQueueSize: config.getOrThrow('MODEL_INTERACTIVE_MAX_QUEUE_SIZE'),
     requestsPerMinute: config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
     tokenRateLimits: {
       global: config.getOrThrow('MODEL_GLOBAL_TOKENS_PER_MINUTE'),
@@ -27,6 +27,7 @@ export function modelRuntimeOptions(
         rerank: config.getOrThrow('MODEL_RERANK_TOKENS_PER_MINUTE'),
       },
     },
+    tokenizerEncoding: config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
     rateLimiter,
     circuitBreaker,
     maxRetries: config.getOrThrow('MODEL_MAX_RETRIES'),

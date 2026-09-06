@@ -5,6 +5,12 @@ import {
   type ModelCircuitPermit,
 } from './circuit-breaker.js';
 import { randomUUID } from 'node:crypto';
+import {
+  countModelChatTokens,
+  countModelTextTokens,
+  countModelTextsTokens,
+  type ModelTokenizerEncoding,
+} from './tokenizer.js';
 
 export {
   LocalModelCircuitBreaker,
@@ -14,6 +20,22 @@ export {
   type ModelCircuitPermit,
   type ModelCircuitState,
 } from './circuit-breaker.js';
+export {
+  countModelChatTokens,
+  countModelTextTokens,
+  countModelTextsTokens,
+  truncateModelTextToTokens,
+  type ModelTokenizerEncoding,
+} from './tokenizer.js';
+export {
+  estimateModelCostUsd,
+  parseModelPricingCatalog,
+  resolveModelPrice,
+  type ModelPrice,
+  type ModelPricingCatalog,
+  type ModelPricingOperation,
+  type ResolvedModelPrice,
+} from './pricing.js';
 
 export type ModelCallContext = {
   tenantId?: string;
@@ -127,6 +149,7 @@ export type ModelResilienceOptions = {
   maxQueueSize?: number;
   requestsPerMinute?: number;
   tokenRateLimits?: ModelTokenRateLimits;
+  tokenizerEncoding?: ModelTokenizerEncoding;
   rateLimiter?: ModelRateLimiter;
   maxRetries?: number;
   retryBaseDelayMs?: number;
@@ -140,13 +163,19 @@ export type ModelResilienceOptions = {
 };
 
 export class LocalHashEmbeddingGateway implements Pick<ModelGateway, 'embed'> {
-  constructor(private readonly onMetric?: ModelCallObserver) {}
+  constructor(
+    private readonly onMetric?: ModelCallObserver,
+    private readonly tokenizerEncoding?: ModelTokenizerEncoding,
+  ) {}
 
   async embed(request: EmbeddingRequest): Promise<number[][]> {
     const callId = randomUUID();
     const startedAt = Date.now();
     const inputCharacters = request.inputs.reduce((sum, input) => sum + input.length, 0);
-    const usage = estimatedUsage(estimateTextsTokens(request.inputs), 0);
+    const usage = estimatedUsage(
+      countModelTextsTokens(request.model, request.inputs, this.tokenizerEncoding),
+      0,
+    );
     try {
       if (request.signal?.aborted) throw abortError(request.signal.reason);
       if (request.model !== LOCAL_HASH_EMBEDDING_MODEL)
@@ -238,7 +267,11 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
 
   async embed(request: EmbeddingRequest): Promise<number[][]> {
     const inputCharacters = request.inputs.reduce((sum, input) => sum + input.length, 0);
-    const estimatedInputTokens = estimateTextsTokens(request.inputs);
+    const estimatedInputTokens = countModelTextsTokens(
+      request.model,
+      request.inputs,
+      this.options.tokenizerEncoding,
+    );
     const scope = await this.resilience.open({
       operation: 'embedding',
       model: request.model,
@@ -293,13 +326,17 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
       model: request.model,
       signal: request.signal,
       inputCharacters,
-      estimatedInputTokens: estimateChatTokens(request.messages),
+      estimatedInputTokens: countModelChatTokens(
+        request.model,
+        request.messages,
+        this.options.tokenizerEncoding,
+      ),
       maxOutputTokens: Math.max(0, Math.floor(request.maxOutputTokens ?? 0)),
       requestContext: request.context,
     });
     let usage: ModelTokenUsage | undefined;
     let outputCharacters = 0;
-    let estimatedOutputTokens = 0;
+    let outputText = '';
     try {
       const response = await scope.retry(() =>
         this.request(
@@ -338,7 +375,7 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
           if (parsed.token) {
             scope.markFirstToken();
             outputCharacters += parsed.token.length;
-            estimatedOutputTokens += estimateTextTokens(parsed.token);
+            outputText += parsed.token;
             yield parsed.token;
           }
           if (parsed.done) {
@@ -354,17 +391,33 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
         if (parsed.token) {
           scope.markFirstToken();
           outputCharacters += parsed.token.length;
-          estimatedOutputTokens += estimateTextTokens(parsed.token);
+          outputText += parsed.token;
           yield parsed.token;
         }
       }
+      const estimatedOutputTokens = countModelTextTokens(
+        request.model,
+        outputText,
+        this.options.tokenizerEncoding,
+      );
       await scope.succeed(usage, outputCharacters, estimatedOutputTokens);
     } catch (error) {
+      const estimatedOutputTokens = countModelTextTokens(
+        request.model,
+        outputText,
+        this.options.tokenizerEncoding,
+      );
       await scope.fail(error, outputCharacters, usage, estimatedOutputTokens);
       throw error;
     } finally {
-      if (!scope.isClosed())
+      if (!scope.isClosed()) {
+        const estimatedOutputTokens = countModelTextTokens(
+          request.model,
+          outputText,
+          this.options.tokenizerEncoding,
+        );
         await scope.fail(abortError(), outputCharacters, usage, estimatedOutputTokens);
+      }
     }
   }
 
@@ -394,7 +447,10 @@ export class OpenAICompatibleModelGateway implements ModelGateway {
 }
 
 export class LocalLexicalRerankGateway implements RerankGateway {
-  constructor(private readonly onMetric?: ModelCallObserver) {}
+  constructor(
+    private readonly onMetric?: ModelCallObserver,
+    private readonly tokenizerEncoding?: ModelTokenizerEncoding,
+  ) {}
 
   async rerank(request: RerankRequest): Promise<RerankResult[]> {
     const callId = randomUUID();
@@ -402,8 +458,12 @@ export class LocalLexicalRerankGateway implements RerankGateway {
     const inputCharacters =
       request.query.length + request.documents.reduce((sum, item) => sum + item.text.length, 0);
     const usage = estimatedUsage(
-      estimateTextTokens(request.query) +
-        estimateTextsTokens(request.documents.map((document) => document.text)),
+      countModelTextTokens(request.model, request.query, this.tokenizerEncoding) +
+        countModelTextsTokens(
+          request.model,
+          request.documents.map((document) => document.text),
+          this.tokenizerEncoding,
+        ),
       0,
     );
     try {
@@ -496,8 +556,12 @@ export class HttpRerankGateway implements RerankGateway {
       inputCharacters:
         request.query.length + request.documents.reduce((sum, item) => sum + item.text.length, 0),
       estimatedInputTokens:
-        estimateTextTokens(request.query) +
-        estimateTextsTokens(request.documents.map((document) => document.text)),
+        countModelTextTokens(request.model, request.query, this.options.tokenizerEncoding) +
+        countModelTextsTokens(
+          request.model,
+          request.documents.map((document) => document.text),
+          this.options.tokenizerEncoding,
+        ),
       maxOutputTokens: 0,
       requestContext: request.context,
     });
@@ -558,7 +622,8 @@ type EmbeddingGatewayFactoryOptions = {
 export function createEmbeddingGateway(
   options: EmbeddingGatewayFactoryOptions,
 ): Pick<ModelGateway, 'embed'> {
-  if (options.provider === 'local') return new LocalHashEmbeddingGateway(options.onMetric);
+  if (options.provider === 'local')
+    return new LocalHashEmbeddingGateway(options.onMetric, options.tokenizerEncoding);
   if (!options.baseUrl || !options.apiKey)
     throw new Error('OpenAI-compatible model gateway requires baseUrl and apiKey');
   return new OpenAICompatibleModelGateway({
@@ -570,6 +635,7 @@ export function createEmbeddingGateway(
     maxQueueSize: options.maxQueueSize,
     requestsPerMinute: options.requestsPerMinute,
     tokenRateLimits: options.tokenRateLimits,
+    tokenizerEncoding: options.tokenizerEncoding,
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
@@ -592,7 +658,8 @@ export function createRerankGateway(
     timeoutMs?: number;
   } & ModelResilienceOptions,
 ): RerankGateway {
-  if (options.provider === 'local') return new LocalLexicalRerankGateway(options.onMetric);
+  if (options.provider === 'local')
+    return new LocalLexicalRerankGateway(options.onMetric, options.tokenizerEncoding);
   if (!options.url || !options.apiKey) throw new Error('HTTP reranker requires url and apiKey');
   return new HttpRerankGateway({
     url: options.url,
@@ -602,6 +669,7 @@ export function createRerankGateway(
     maxQueueSize: options.maxQueueSize,
     requestsPerMinute: options.requestsPerMinute,
     tokenRateLimits: options.tokenRateLimits,
+    tokenizerEncoding: options.tokenizerEncoding,
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
@@ -630,6 +698,7 @@ export function createChatGateway(
     maxQueueSize: options.maxQueueSize,
     requestsPerMinute: options.requestsPerMinute,
     tokenRateLimits: options.tokenRateLimits,
+    tokenizerEncoding: options.tokenizerEncoding,
     rateLimiter: options.rateLimiter,
     maxRetries: options.maxRetries,
     retryBaseDelayMs: options.retryBaseDelayMs,
@@ -1310,19 +1379,6 @@ function sumAttemptUsage(attempts: readonly ModelAttemptMetric[]): ModelTokenUsa
     }),
     { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   );
-}
-
-export function estimateTextTokens(input: string): number {
-  if (!input) return 0;
-  return Math.max(1, Math.ceil(new TextEncoder().encode(input).byteLength / 3));
-}
-
-function estimateTextsTokens(inputs: readonly string[]): number {
-  return inputs.reduce((sum, input) => sum + estimateTextTokens(input), 0);
-}
-
-function estimateChatTokens(messages: readonly ChatMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTextTokens(message.content) + 4, 0) + 2;
 }
 
 function quotaEntries(input: ModelRateLimitInput): Array<{

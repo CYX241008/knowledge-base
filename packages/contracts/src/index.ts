@@ -367,6 +367,18 @@ export const SearchDiagnosticsSchema = z.object({
     nonAdjacentDuplicatesRemoved: z.number().int().nonnegative(),
     crossSourceSimilarPreserved: z.number().int().nonnegative(),
   }),
+  rerankPreparation: z
+    .object({
+      inputCandidates: z.number().int().nonnegative(),
+      selectedCandidates: z.number().int().nonnegative(),
+      exactDuplicatesRemoved: z.number().int().nonnegative(),
+      perDocumentLimitRemoved: z.number().int().nonnegative(),
+      candidateLimitRemoved: z.number().int().nonnegative(),
+      tokenBudgetRemoved: z.number().int().nonnegative(),
+      truncatedDocuments: z.number().int().nonnegative(),
+      inputTokens: z.number().int().nonnegative(),
+    })
+    .optional(),
   timingsMs: z.object({
     settings: z.number().int().nonnegative(),
     embedding: z.number().int().nonnegative(),
@@ -503,6 +515,9 @@ export type SystemRetrievalSettings = z.infer<typeof SystemRetrievalSettingsSche
 
 export const SystemGovernanceSettingsSchema = z.object({
   auditRetentionDays: z.number().int().min(30).max(3_650),
+  modelDailyBudgetUsd: z.number().min(0).max(1_000_000_000),
+  modelMonthlyBudgetUsd: z.number().min(0).max(1_000_000_000),
+  modelBudgetAction: z.enum(['warn', 'degrade', 'reject']),
 });
 export type SystemGovernanceSettings = z.infer<typeof SystemGovernanceSettingsSchema>;
 
@@ -528,7 +543,29 @@ export const SystemRuntimeConfigurationSchema = z.object({
   embeddingTokensPerMinute: z.number().int().nonnegative(),
   chatTokensPerMinute: z.number().int().nonnegative(),
   rerankTokensPerMinute: z.number().int().nonnegative(),
+  tokenizerEncoding: z.string(),
   chatMaxOutputTokens: z.number().int().positive(),
+  chatContextWindowTokens: z.number().int().positive(),
+  ragMaxContextTokens: z.number().int().positive(),
+  ragContextSafetyTokens: z.number().int().nonnegative(),
+  rerankCandidateLimit: z.number().int().positive(),
+  rerankMaxTokens: z.number().int().positive(),
+  maxChunksPerDocument: z.number().int().positive(),
+  embeddingBatchMaxInputs: z.number().int().positive(),
+  embeddingBatchMaxTokens: z.number().int().positive(),
+  documentMaxChunks: z.number().int().positive(),
+  modelMaxCallCostUsd: z.number().nonnegative(),
+  modelPricingRuleCount: z.number().int().nonnegative(),
+  modelBudgetTimezoneOffsetMinutes: z.number().int(),
+  modelInteractiveMaxConcurrency: z.number().int().positive(),
+  modelInteractiveMaxQueueSize: z.number().int().nonnegative(),
+  modelBatchMaxConcurrency: z.number().int().positive(),
+  modelBatchMaxQueueSize: z.number().int().nonnegative(),
+  chatFallbackModel: z.string().nullable(),
+  chatDegradedMaxOutputTokens: z.number().int().positive(),
+  chatHistoryMaxTokens: z.number().int().nonnegative(),
+  chatHistoryMaxMessages: z.number().int().nonnegative(),
+  ragDegradedContextTokens: z.number().int().positive(),
   ragMinRelevance: z.number().min(0).max(1),
   maxUploadSizeBytes: z.number().int().positive(),
   chatRetentionDays: z.number().int().positive(),
@@ -620,6 +657,29 @@ export const QualityCostResponseSchema = z.object({
     totalCalls: z.number().int().nonnegative(),
     totalTokens: z.number().int().nonnegative(),
     estimatedCostUsd: z.number().nonnegative(),
+    budget: z.object({
+      action: z.enum(['warn', 'degrade', 'reject']),
+      daily: z.object({
+        usedUsd: z.number().nonnegative(),
+        budgetUsd: z.number().nonnegative(),
+        ratio: z.number().nonnegative(),
+      }),
+      monthly: z.object({
+        usedUsd: z.number().nonnegative(),
+        budgetUsd: z.number().nonnegative(),
+        ratio: z.number().nonnegative(),
+      }),
+      alerts: z.array(
+        z.object({
+          id: z.string().uuid(),
+          periodType: z.enum(['day', 'month']),
+          thresholdPercent: z.number().int().positive(),
+          usageCostUsd: z.number().nonnegative(),
+          budgetUsd: z.number().nonnegative(),
+          createdAt: z.string().datetime(),
+        }),
+      ),
+    }),
     operations: z.array(ModelOperationSummarySchema),
   }),
 });
@@ -655,6 +715,8 @@ export const AskQuestionResponseSchema = z.object({
   answer: z.string(),
   grounded: z.boolean(),
   model: z.string(),
+  degraded: z.boolean().optional(),
+  degradationReason: z.string().nullable().optional(),
   citations: z.array(AnswerCitationSchema),
   retrievalDiagnostics: SearchDiagnosticsSchema.optional(),
 });
@@ -688,6 +750,11 @@ export const ConversationAnswerRunSchema = z.object({
   assistantMessageId: z.string().uuid().nullable(),
   status: AnswerRunStatusSchema,
   errorCode: z.string().nullable(),
+  requestedModel: z.string().nullable(),
+  actualModel: z.string().nullable(),
+  degraded: z.boolean(),
+  degradationReason: z.string().nullable(),
+  estimatedCostUsd: z.number().nonnegative(),
   startedAt: z.string().datetime(),
   completedAt: z.string().datetime().nullable(),
 });

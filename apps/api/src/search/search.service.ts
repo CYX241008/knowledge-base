@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
 import type {
@@ -14,9 +14,14 @@ import type {
 } from '@knowledge-base/contracts';
 import { SearchQueryEventEntity } from '@knowledge-base/database';
 import {
+  countModelTextTokens,
   createEmbeddingGateway,
   createRerankGateway,
+  LOCAL_LEXICAL_RERANKER_MODEL,
+  LocalLexicalRerankGateway,
+  truncateModelTextToTokens,
   type ModelGateway,
+  type ModelTokenizerEncoding,
   type RerankGateway,
 } from '@knowledge-base/model-gateway';
 import {
@@ -30,6 +35,10 @@ import { DataSource } from 'typeorm';
 import { ModelMetricsService } from '../observability/model-metrics.service';
 import { modelRuntimeOptions } from '../observability/model-runtime-options';
 import { ModelQuotaService } from '../observability/model-quota.service';
+import {
+  ModelBudgetExceededError,
+  ModelBudgetService,
+} from '../observability/model-budget.service';
 import { SystemGovernanceService } from '../system-governance/system-governance.service';
 import {
   consolidateSearchCandidates,
@@ -37,6 +46,17 @@ import {
 } from './candidate-consolidation';
 
 type RankedChunk = { id: string; score: number };
+
+type RerankPreparationStats = {
+  inputCandidates: number;
+  selectedCandidates: number;
+  exactDuplicatesRemoved: number;
+  perDocumentLimitRemoved: number;
+  candidateLimitRemoved: number;
+  tokenBudgetRemoved: number;
+  truncatedDocuments: number;
+  inputTokens: number;
+};
 
 type SearchCommand = SearchDocumentsRequest & {
   tenantId: string;
@@ -86,6 +106,7 @@ type GovernanceSummaryRow = {
 export class SearchService {
   private readonly embedding: Pick<ModelGateway, 'embed'>;
   private readonly reranker: RerankGateway;
+  private readonly fallbackReranker: RerankGateway;
   private readonly keywordIndex: ElasticsearchChunkIndex;
   private readonly embeddingModel: string;
 
@@ -96,6 +117,9 @@ export class SearchService {
     @Inject(ModelQuotaService) private readonly modelQuota?: ModelQuotaService,
     @Inject(SystemGovernanceService)
     private readonly systemGovernance?: SystemGovernanceService,
+    @Optional()
+    @Inject(ModelBudgetService)
+    private readonly modelBudget?: ModelBudgetService,
   ) {
     this.embeddingModel = this.config.getOrThrow('EMBEDDING_MODEL');
     this.embedding = createEmbeddingGateway({
@@ -123,6 +147,10 @@ export class SearchService {
         this.modelQuota?.circuitBreaker,
       ),
     });
+    this.fallbackReranker = new LocalLexicalRerankGateway(
+      this.modelMetrics.observe,
+      this.config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
+    );
     this.keywordIndex = new ElasticsearchChunkIndex(
       this.config.getOrThrow('ELASTICSEARCH_URL'),
       this.config.getOrThrow('ELASTICSEARCH_INDEX'),
@@ -160,28 +188,54 @@ export class SearchService {
     let vectorCandidateCount = 0;
     let keywordCandidateCount = 0;
     try {
-      const embeddingStartedAt = Date.now();
-      const [queryVector] = await this.embedding.embed({
-        model: this.embeddingModel,
-        inputs: [input.text],
-        dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
-        signal: input.signal,
-        context: modelCallContext(input),
-      });
-      timingsMs.embedding = Date.now() - embeddingStartedAt;
-      if (!queryVector) throw new Error('Embedding model returned no query vector');
-      const vectorLiteral = `[${queryVector.join(',')}]`;
-      const vectorStartedAt = Date.now();
       const keywordStartedAt = Date.now();
-      const vectorPromise = this.dataSource
-        .query<RankedChunk[]>(
-          `
+      const keywordPromise = this.keywordIndex
+        .search(input.tenantId, input.principalIds, input.text, candidateLimit, {
+          spaceId: input.spaceId,
+          folderId: input.folderId,
+          tagIds: input.tagIds,
+        })
+        .finally(() => {
+          timingsMs.keyword = Date.now() - keywordStartedAt;
+        });
+      const embeddingAssessment = await this.modelBudget?.assess({
+        tenantId: input.tenantId,
+        operation: 'embedding',
+        model: this.embeddingModel,
+        inputTokens: countModelTextTokens(
+          this.embeddingModel,
+          input.text,
+          this.config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
+        ),
+        maxOutputTokens: 0,
+      });
+      if (embeddingAssessment?.mode === 'reject') {
+        throw new ModelBudgetExceededError(embeddingAssessment);
+      }
+      let vectorHits: RankedChunk[] = [];
+      if (embeddingAssessment?.mode !== 'degrade') {
+        const embeddingStartedAt = Date.now();
+        const [queryVector] = await this.embedding.embed({
+          model: this.embeddingModel,
+          inputs: [input.text],
+          dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
+          signal: input.signal,
+          context: modelCallContext(input),
+        });
+        timingsMs.embedding = Date.now() - embeddingStartedAt;
+        if (!queryVector) throw new Error('Embedding model returned no query vector');
+        const vectorLiteral = `[${queryVector.join(',')}]`;
+        const vectorStartedAt = Date.now();
+        vectorHits = await this.dataSource
+          .query<RankedChunk[]>(
+            `
           SELECT chunk.id,
                  1 - (chunk.embedding <=> $1::vector) AS score
           FROM document_chunk chunk
           INNER JOIN document ON document.id = chunk.document_id
           WHERE chunk.tenant_id = $2::uuid
             AND chunk.principal_ids && $3::varchar[]
+            AND chunk.embedding_model = $8
             AND document.deleted_at IS NULL
             AND document.status = 'published'
             AND document.current_ready_version_id = chunk.document_version_id
@@ -199,30 +253,23 @@ export class SearchService {
             )
           ORDER BY chunk.embedding <=> $1::vector
           LIMIT $4
-        `,
-          [
-            vectorLiteral,
-            input.tenantId,
-            input.principalIds,
-            candidateLimit,
-            input.spaceId ?? null,
-            input.folderId ?? null,
-            input.tagIds ?? [],
-          ],
-        )
-        .finally(() => {
-          timingsMs.vector = Date.now() - vectorStartedAt;
-        });
-      const keywordPromise = this.keywordIndex
-        .search(input.tenantId, input.principalIds, input.text, candidateLimit, {
-          spaceId: input.spaceId,
-          folderId: input.folderId,
-          tagIds: input.tagIds,
-        })
-        .finally(() => {
-          timingsMs.keyword = Date.now() - keywordStartedAt;
-        });
-      const [vectorHits, keywordHits] = await Promise.all([vectorPromise, keywordPromise]);
+          `,
+            [
+              vectorLiteral,
+              input.tenantId,
+              input.principalIds,
+              candidateLimit,
+              input.spaceId ?? null,
+              input.folderId ?? null,
+              input.tagIds ?? [],
+              this.embeddingModel,
+            ],
+          )
+          .finally(() => {
+            timingsMs.vector = Date.now() - vectorStartedAt;
+          });
+      }
+      const keywordHits = await keywordPromise;
       vectorCandidateCount = vectorHits.length;
       keywordCandidateCount = keywordHits.length;
       const fusionStartedAt = Date.now();
@@ -248,6 +295,7 @@ export class SearchService {
             [],
             [],
             emptyConsolidationStats(),
+            emptyRerankPreparationStats(),
             new Map(),
           );
         }
@@ -300,6 +348,7 @@ export class SearchService {
         WHERE chunk.id = ANY($1::uuid[])
           AND chunk.tenant_id = $2::uuid
           AND chunk.principal_ids && $3::varchar[]
+          AND chunk.embedding_model = $7
           AND document.deleted_at IS NULL
           AND document.status = 'published'
           AND document.current_ready_version_id = chunk.document_version_id
@@ -323,22 +372,58 @@ export class SearchService {
           input.spaceId ?? null,
           input.folderId ?? null,
           input.tagIds ?? [],
+          this.embeddingModel,
         ],
       );
       timingsMs.hydration = Date.now() - hydrationStartedAt;
       const byId = new Map(rows.map((row) => [row.chunkId, row]));
       const hits = hydrateRankedHits(fusedCandidates, byId);
+      const rerankerModel = this.config.getOrThrow('RERANKER_MODEL');
+      const rerankPreparation = prepareRerankCandidates(
+        input.text,
+        hits.flatMap((hit) => {
+          const row = byId.get(hit.chunkId);
+          return row ? [{ hit, contentSha256: row.contentSha256 }] : [];
+        }),
+        {
+          model: rerankerModel,
+          tokenizerEncoding: this.config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
+          candidateLimit: Math.min(
+            candidateLimit,
+            this.config.getOrThrow('RAG_RERANK_CANDIDATE_LIMIT'),
+          ),
+          maxTokens: this.config.getOrThrow('RAG_RERANK_MAX_TOKENS'),
+          maxChunksPerDocument: this.config.getOrThrow('RAG_MAX_CHUNKS_PER_DOCUMENT'),
+        },
+      );
       const rerankStartedAt = Date.now();
-      const reranked = await this.reranker.rerank({
-        model: this.config.getOrThrow('RERANKER_MODEL'),
-        query: input.text,
-        documents: hits.map((hit) => ({ id: hit.chunkId, text: `${hit.title}\n${hit.content}` })),
-        topN: candidateLimit,
-        signal: input.signal,
-        context: modelCallContext(input),
+      const rerankAssessment = await this.modelBudget?.assess({
+        tenantId: input.tenantId,
+        operation: 'rerank',
+        model: rerankerModel,
+        inputTokens: rerankPreparation.stats.inputTokens,
+        maxOutputTokens: 0,
       });
+      if (rerankAssessment?.mode === 'reject') {
+        throw new ModelBudgetExceededError(rerankAssessment);
+      }
+      const activeReranker =
+        rerankAssessment?.mode === 'degrade' ? this.fallbackReranker : this.reranker;
+      const activeRerankerModel =
+        rerankAssessment?.mode === 'degrade' ? LOCAL_LEXICAL_RERANKER_MODEL : rerankerModel;
+      const reranked =
+        rerankPreparation.documents.length === 0
+          ? []
+          : await activeReranker.rerank({
+              model: activeRerankerModel,
+              query: input.text,
+              documents: rerankPreparation.documents,
+              topN: rerankPreparation.documents.length,
+              signal: input.signal,
+              context: modelCallContext(input),
+            });
       timingsMs.rerank = Date.now() - rerankStartedAt;
-      const hitsById = new Map(hits.map((hit) => [hit.chunkId, hit]));
+      const hitsById = new Map(rerankPreparation.hits.map((hit) => [hit.chunkId, hit]));
       const rerankedHits = reranked
         .map((result) => {
           const hit = hitsById.get(result.id);
@@ -364,8 +449,10 @@ export class SearchService {
         }),
         nearDuplicateThreshold,
       );
+      consolidation.stats.exactDuplicatesRemoved += rerankPreparation.stats.exactDuplicatesRemoved;
       timingsMs.consolidation = Date.now() - consolidationStartedAt;
       const mmrStartedAt = Date.now();
+      const offset = (input.page - 1) * input.limit;
       const rankedHits = maximalMarginalRelevance(
         consolidation.candidates.map((candidate) => ({
           id: candidate.hit.chunkId,
@@ -373,10 +460,9 @@ export class SearchService {
           embedding: candidate.embedding,
           hit: candidate.hit,
         })),
-        { lambda: mmrLambda },
+        { lambda: mmrLambda, limit: offset + input.limit },
       ).map((candidate) => candidate.hit);
       timingsMs.mmr = Date.now() - mmrStartedAt;
-      const offset = (input.page - 1) * input.limit;
       const durationMs = Date.now() - startedAt;
       timingsMs.total = durationMs;
       const candidateIdSet = new Set(candidateIds);
@@ -385,7 +471,7 @@ export class SearchService {
         queryEventId: null,
         query: input.text,
         hits: rankedHits.slice(offset, offset + input.limit),
-        total: rankedHits.length,
+        total: consolidation.candidates.length,
         page: input.page,
         pageSize: input.limit,
         durationMs,
@@ -405,6 +491,7 @@ export class SearchService {
           consolidation.candidates.map((candidate) => candidate.hit),
           rankedHits,
           consolidation.stats,
+          rerankPreparation.stats,
           byId,
         );
       }
@@ -661,6 +748,7 @@ function buildDiagnostics(
   consolidatedHits: SearchDocumentHit[],
   selectedHits: SearchDocumentHit[],
   consolidation: CandidateConsolidationStats,
+  rerankPreparation: RerankPreparationStats,
   byId: Map<string, ChunkRow>,
 ): SearchDiagnostics {
   const stage = (ranking: RankedChunk[]) => ({
@@ -673,6 +761,7 @@ function buildDiagnostics(
     mmrLambda,
     nearDuplicateThreshold,
     consolidation,
+    rerankPreparation,
     timingsMs: { ...timingsMs },
     stages: {
       vector: stage(vectorHits),
@@ -700,6 +789,19 @@ function emptyConsolidationStats(): CandidateConsolidationStats {
   };
 }
 
+function emptyRerankPreparationStats(): RerankPreparationStats {
+  return {
+    inputCandidates: 0,
+    selectedCandidates: 0,
+    exactDuplicatesRemoved: 0,
+    perDocumentLimitRemoved: 0,
+    candidateLimitRemoved: 0,
+    tokenBudgetRemoved: 0,
+    truncatedDocuments: 0,
+    inputTokens: 0,
+  };
+}
+
 function errorCode(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     return String(error.code).slice(0, 128);
@@ -719,6 +821,77 @@ function modelCallContext(input: SearchCommand) {
     runId: input.runId,
     source: input.source === 'answer' ? ('answer' as const) : ('search' as const),
   };
+}
+
+export function prepareRerankCandidates(
+  query: string,
+  candidates: Array<{ hit: SearchDocumentHit; contentSha256: string }>,
+  options: {
+    model: string;
+    tokenizerEncoding: ModelTokenizerEncoding;
+    candidateLimit: number;
+    maxTokens: number;
+    maxChunksPerDocument: number;
+  },
+): {
+  hits: SearchDocumentHit[];
+  documents: Array<{ id: string; text: string }>;
+  stats: RerankPreparationStats;
+} {
+  const stats = { ...emptyRerankPreparationStats(), inputCandidates: candidates.length };
+  const selectedHits: SearchDocumentHit[] = [];
+  const documents: Array<{ id: string; text: string }> = [];
+  const seenHashes = new Set<string>();
+  const documentCounts = new Map<string, number>();
+  let inputTokens = countModelTextTokens(options.model, query, options.tokenizerEncoding);
+
+  for (const candidate of candidates) {
+    const hash = candidate.contentSha256.trim();
+    if (hash && seenHashes.has(hash)) {
+      stats.exactDuplicatesRemoved += 1;
+      continue;
+    }
+    const documentCount = documentCounts.get(candidate.hit.documentId) ?? 0;
+    if (documentCount >= options.maxChunksPerDocument) {
+      stats.perDocumentLimitRemoved += 1;
+      continue;
+    }
+    if (documents.length >= options.candidateLimit) {
+      stats.candidateLimitRemoved += 1;
+      continue;
+    }
+
+    const fullText = `${candidate.hit.title}\n${candidate.hit.content}`;
+    const fullTokens = countModelTextTokens(options.model, fullText, options.tokenizerEncoding);
+    const remainingTokens = options.maxTokens - inputTokens - 4;
+    if (remainingTokens <= 0) {
+      stats.tokenBudgetRemoved += 1;
+      continue;
+    }
+    const text =
+      fullTokens <= remainingTokens
+        ? fullText
+        : truncateModelTextToTokens(
+            options.model,
+            fullText,
+            remainingTokens,
+            options.tokenizerEncoding,
+          );
+    if (!text) {
+      stats.tokenBudgetRemoved += 1;
+      continue;
+    }
+    if (text !== fullText) stats.truncatedDocuments += 1;
+    inputTokens += countModelTextTokens(options.model, text, options.tokenizerEncoding) + 4;
+    if (hash) seenHashes.add(hash);
+    documentCounts.set(candidate.hit.documentId, documentCount + 1);
+    selectedHits.push(candidate.hit);
+    documents.push({ id: candidate.hit.chunkId, text });
+  }
+
+  stats.selectedCandidates = documents.length;
+  stats.inputTokens = inputTokens;
+  return { hits: selectedHits, documents, stats };
 }
 
 export function reciprocalRankFusion(rankings: RankedChunk[][], rankConstant = 60): RankedChunk[] {

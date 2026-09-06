@@ -16,6 +16,7 @@ import {
   DocumentEntity,
   DocumentSourceAnchorEntity,
   DocumentVersionEntity,
+  EmbeddingCacheEntity,
   IngestionJobEntity,
   IngestionStageEntity,
   ModelUsageEventEntity,
@@ -29,6 +30,8 @@ import { SearchProjectionService } from './search-projection.service';
 import { OBJECT_STORAGE } from './worker.constants';
 import { ModelQuotaService } from './model-quota.service';
 import { ModelMetricsService } from './model-metrics.service';
+import { ModelPricingService } from './model-pricing.service';
+import { ModelBudgetService } from './model-budget.service';
 import { DocumentAclProjectionProcessor } from './document-acl-projection.processor';
 import { DocumentSearchProjectionProcessor } from './document-search-projection.processor';
 
@@ -54,6 +57,7 @@ import { DocumentSearchProjectionProcessor } from './document-search-projection.
       ChatCitationEntity,
       DocumentAssetEntity,
       DocumentChunkEntity,
+      EmbeddingCacheEntity,
       DocumentVersionEntity,
       DocumentSourceAnchorEntity,
       IngestionJobEntity,
@@ -91,6 +95,8 @@ import { DocumentSearchProjectionProcessor } from './document-search-projection.
     OrphanObjectCleanupService,
     ModelQuotaService,
     ModelMetricsService,
+    ModelPricingService,
+    ModelBudgetService,
     SearchProjectionService,
   ],
 })

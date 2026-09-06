@@ -373,6 +373,19 @@ ready | retrying | failed | cancelled`
   - GIN：`principal_ids`
   - HNSW：`embedding vector_cosine_ops`
   - B-tree：`(tenant_id, document_version_id)`
+  - B-tree：`(tenant_id, embedding_model, document_version_id)`
+
+#### `embedding_cache`
+
+- 用途：按内容复用 Embedding，并为摄取重试和索引重建提供批次级断点。
+- 主键：`(tenant_id, content_sha256, embedding_model, dimensions)`
+- 外键：`tenant_id -> tenant.id ON DELETE CASCADE`
+- 字段：`tenant_id`、`content_sha256 char(64)`、
+  `embedding_model varchar(128)`、`dimensions integer`、
+  `embedding vector(384)`、`token_count integer`、`created_at`、`updated_at`
+- 约束：当前 `dimensions = 384`；`token_count >= 0`
+- 迁移时从现有 `document_chunk` 按缓存键回填最新向量。
+- 索引：`(tenant_id, embedding_model, updated_at DESC)`
 
 ### 4.5 文档审核
 
@@ -483,6 +496,9 @@ ready | retrying | failed | cancelled`
   `assistant_message_id -> chat_message.id`
 - 字段：`id`、`tenant_id`、`conversation_id`、`user_message_id`、
   `assistant_message_id uuid?`、`status varchar(16)`、`error_code varchar(128)?`、
+  `requested_model varchar(128)?`、`actual_model varchar(128)?`、
+  `degraded boolean`、`degradation_reason varchar(128)?`、
+  `estimated_cost_usd numeric(20,10)`、
   `started_at`、`completed_at?`
 - 唯一：`user_message_id`、`assistant_message_id`
 - 状态：`running | completed | failed | cancelled`
@@ -528,12 +544,15 @@ ready | retrying | failed | cancelled`
 - 字段：`tenant_id`、`search_candidate_limit integer`、
   `search_score_threshold float8`、`search_page_size integer`、
   `feedback_enabled boolean`、`audit_retention_days integer`、
+  `model_daily_budget_usd numeric(20,6)`、
+  `model_monthly_budget_usd numeric(20,6)`、`model_budget_action varchar(16)`、
   `version integer`、`updated_by uuid?`、`created_at`、`updated_at`
 - 范围约束：
   - `search_candidate_limit`: 50-500
   - `search_score_threshold`: 0-1
   - `search_page_size`: 5-50
   - `audit_retention_days`: 30-3650
+  - 模型预算非负；`model_budget_action`: `warn | degrade | reject`
   - `version > 0`
 
 #### `model_usage_event`
@@ -546,12 +565,24 @@ ready | retrying | failed | cancelled`
   `attempt integer`、`call_status varchar(16)`、`attempt_status varchar(16)`、
   `usage_source varchar(16)`、`reserved_tokens integer`、`input_tokens integer`、
   `output_tokens integer`、`total_tokens integer`、`estimated_cost_usd numeric(20,10)`、
+  `input_cost_per_million_tokens numeric(20,10)`、
+  `output_cost_per_million_tokens numeric(20,10)`、`pricing_source varchar(255)`、
   `attempt_duration_ms integer`、`call_duration_ms integer`、
   `first_token_duration_ms integer?`、`error_code varchar(128)?`、`created_at`
 - `usage_source`：
   - `provider`：供应商返回的实际 usage。
   - `estimated`：成功调用未返回 usage 时的估算。
   - `reserved`：失败或超时调用保留的预留 Token。
+
+#### `model_budget_alert`
+
+- 用途：记录租户日/月模型预算首次跨越指定阈值的事件。
+- 主键：`id`
+- 外键：`tenant_id -> tenant.id ON DELETE CASCADE`
+- 唯一：`(tenant_id, period_type, period_start, threshold_percent)`
+- 字段：`period_type day|month`、`period_start`、`threshold_percent`、
+  `usage_cost_usd`、`budget_usd`、`created_at`
+- 默认阈值由 `MODEL_BUDGET_ALERT_THRESHOLDS` 控制，同一租户、周期和阈值只记录一次。
 
 #### `audit_event`
 
@@ -585,6 +616,7 @@ ready | retrying | failed | cancelled`
 | `knowledge_space` / `knowledge_folder` | `document`                                        | 1:N，可选  | 默认 `NO ACTION` |
 | `document`                             | `document_version`                                | 1:N        | 默认 `NO ACTION` |
 | `document_version`                     | `document_asset/source_anchor/chunk`              | 1:N        | `CASCADE`        |
+| `tenant`                               | `embedding_cache`                                 | 1:N        | `CASCADE`        |
 | `document` / `knowledge_tag`           | `document_tag`                                    | N:M        | `CASCADE`        |
 | `document_version`                     | `ingestion_job`                                   | 1:0..1     | 默认 `NO ACTION` |
 | `ingestion_job`                        | `ingestion_stage`                                 | 1:N        | `CASCADE`        |
@@ -600,6 +632,7 @@ ready | retrying | failed | cancelled`
 ## 6. 关键索引
 
 - 向量检索：`document_chunk.embedding` 的 HNSW cosine 索引。
+- 向量模型隔离：`document_chunk (tenant_id, embedding_model, document_version_id)`。
 - ACL 过滤：`document_chunk.principal_ids` 的 GIN 索引。
 - 文档版本：`(tenant_id, document_id, version_no)` 唯一。
 - 文件夹命名：根目录和子目录分别使用大小写无关的部分唯一索引。

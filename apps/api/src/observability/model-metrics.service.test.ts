@@ -103,6 +103,9 @@ describe('ModelMetricsService', () => {
         usageSource: 'reserved',
         totalTokens: 500,
         estimatedCostUsd: 0.0016,
+        inputCostPerMillionTokens: 2,
+        outputCostPerMillionTokens: 8,
+        pricingSource: 'fallback',
       }),
       expect.objectContaining({
         attempt: 2,

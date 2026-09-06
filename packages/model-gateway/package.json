@@ -15,7 +15,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "ioredis": "catalog:"
+    "ioredis": "catalog:",
+    "js-tiktoken": "^1.0.21"
   },
   "devDependencies": {
     "@knowledge-base/eslint-config": "workspace:*",

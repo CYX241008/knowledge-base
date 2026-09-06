@@ -6,6 +6,8 @@ import type { ModelCallMetric, ModelCallObserver } from '@knowledge-base/model-g
 import { logEvent } from '@knowledge-base/observability';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
+import { ModelPricingService } from './model-pricing.service';
+import { ModelBudgetService } from './model-budget.service';
 
 type ModelMetricAccumulator = {
   operation: ModelCallMetric['operation'];
@@ -26,6 +28,7 @@ type ModelMetricAccumulator = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  estimatedCostUsd: number;
 };
 
 @Injectable()
@@ -36,6 +39,12 @@ export class ModelMetricsService {
   constructor(
     @Inject(ConfigService) private readonly config: ConfigService<ServerEnv, true>,
     @Optional() @Inject(DataSource) private readonly dataSource?: DataSource,
+    @Optional()
+    @Inject(ModelPricingService)
+    private readonly pricing?: ModelPricingService,
+    @Optional()
+    @Inject(ModelBudgetService)
+    private readonly budget?: ModelBudgetService,
   ) {}
 
   readonly observe: ModelCallObserver = async (metric) => {
@@ -59,6 +68,7 @@ export class ModelMetricsService {
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
+      estimatedCostUsd: 0,
     };
     accumulator.calls += 1;
     accumulator[statusField(metric.status)] += 1;
@@ -78,6 +88,7 @@ export class ModelMetricsService {
     accumulator.inputTokens += metric.usage?.inputTokens ?? 0;
     accumulator.outputTokens += metric.usage?.outputTokens ?? 0;
     accumulator.totalTokens += metric.usage?.totalTokens ?? 0;
+    accumulator.estimatedCostUsd += this.metricCost(metric);
     this.accumulators.set(key, accumulator);
 
     if (metric.status !== 'success') {
@@ -102,8 +113,6 @@ export class ModelMetricsService {
       }
     >;
   } {
-    const inputRate = this.config.getOrThrow('MODEL_INPUT_COST_PER_MILLION_TOKENS');
-    const outputRate = this.config.getOrThrow('MODEL_OUTPUT_COST_PER_MILLION_TOKENS');
     return {
       startedAt: this.startedAt.toISOString(),
       operations: [...this.accumulators.values()]
@@ -114,10 +123,7 @@ export class ModelMetricsService {
             metric.firstTokenSamples === 0
               ? null
               : round(metric.firstTokenDurationMs / metric.firstTokenSamples, 2),
-          estimatedCostUsd: round(
-            (metric.inputTokens * inputRate + metric.outputTokens * outputRate) / 1_000_000,
-            6,
-          ),
+          estimatedCostUsd: round(metric.estimatedCostUsd, 6),
         }))
         .sort(
           (left, right) =>
@@ -263,9 +269,8 @@ export class ModelMetricsService {
               usageSource: metric.usage ? ('provider' as const) : ('estimated' as const),
             },
           ];
-    const inputRate = this.config.getOrThrow('MODEL_INPUT_COST_PER_MILLION_TOKENS');
-    const outputRate = this.config.getOrThrow('MODEL_OUTPUT_COST_PER_MILLION_TOKENS');
     const callId = metric.callId ?? randomUUID();
+    const price = this.resolvePrice(metric.operation, metric.model);
     try {
       await this.dataSource.getRepository(ModelUsageEventEntity).insert(
         attempts.map((attempt) => ({
@@ -286,8 +291,12 @@ export class ModelMetricsService {
           outputTokens: attempt.usage.outputTokens,
           totalTokens: attempt.usage.totalTokens,
           estimatedCostUsd:
-            (attempt.usage.inputTokens * inputRate + attempt.usage.outputTokens * outputRate) /
+            (attempt.usage.inputTokens * price.inputCostPerMillionTokens +
+              attempt.usage.outputTokens * price.outputCostPerMillionTokens) /
             1_000_000,
+          inputCostPerMillionTokens: price.inputCostPerMillionTokens,
+          outputCostPerMillionTokens: price.outputCostPerMillionTokens,
+          pricingSource: price.source,
           attemptDurationMs: attempt.durationMs,
           callDurationMs: metric.durationMs,
           firstTokenDurationMs: metric.firstTokenDurationMs ?? null,
@@ -299,7 +308,37 @@ export class ModelMetricsService {
         callId,
         message: error instanceof Error ? error.message : String(error),
       });
+      return;
     }
+    if (metric.context?.tenantId) {
+      await this.budget?.recordThresholds(metric.context.tenantId).catch((error) =>
+        logEvent('model.budget_alert_failed', {
+          callId,
+          tenantId: metric.context?.tenantId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
+  private metricCost(metric: ModelCallMetric): number {
+    const price = this.resolvePrice(metric.operation, metric.model);
+    const usage = metric.usage ?? { inputTokens: 0, outputTokens: 0 };
+    return (
+      (usage.inputTokens * price.inputCostPerMillionTokens +
+        usage.outputTokens * price.outputCostPerMillionTokens) /
+      1_000_000
+    );
+  }
+
+  private resolvePrice(operation: ModelCallMetric['operation'], model: string) {
+    return (
+      this.pricing?.resolve(operation, model) ?? {
+        inputCostPerMillionTokens: this.config.getOrThrow('MODEL_INPUT_COST_PER_MILLION_TOKENS'),
+        outputCostPerMillionTokens: this.config.getOrThrow('MODEL_OUTPUT_COST_PER_MILLION_TOKENS'),
+        source: 'fallback',
+      }
+    );
   }
 }
 

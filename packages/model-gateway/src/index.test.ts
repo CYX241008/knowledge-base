@@ -9,6 +9,7 @@ import {
   ModelGatewayRateLimitError,
   ModelGatewayUnavailableError,
   OpenAICompatibleModelGateway,
+  countModelTextTokens,
   type ModelCallMetric,
 } from './index';
 
@@ -144,16 +145,17 @@ describe('OpenAICompatibleModelGateway', () => {
 
   it('reserves and settles quota for every provider attempt', async () => {
     const metrics: ModelCallMetric[] = [];
+    const estimatedTokens = countModelTextTokens('embedding-model', 'retry');
     const rateLimiter = {
       consume: vi
         .fn()
         .mockResolvedValueOnce({
           allowed: true,
-          reservation: { id: 'reservation-1', reservedTokens: 2 },
+          reservation: { id: 'reservation-1', reservedTokens: estimatedTokens },
         })
         .mockResolvedValueOnce({
           allowed: true,
-          reservation: { id: 'reservation-2', reservedTokens: 2 },
+          reservation: { id: 'reservation-2', reservedTokens: estimatedTokens },
         }),
       settle: vi.fn().mockResolvedValue(undefined),
     };
@@ -180,19 +182,27 @@ describe('OpenAICompatibleModelGateway', () => {
     expect(rateLimiter.consume).toHaveBeenCalledTimes(2);
     expect(rateLimiter.settle).toHaveBeenNthCalledWith(
       1,
-      { id: 'reservation-1', reservedTokens: 2 },
-      2,
+      { id: 'reservation-1', reservedTokens: estimatedTokens },
+      estimatedTokens,
     );
     expect(rateLimiter.settle).toHaveBeenNthCalledWith(
       2,
-      { id: 'reservation-2', reservedTokens: 2 },
+      { id: 'reservation-2', reservedTokens: estimatedTokens },
       3,
     );
     expect(metrics[0]).toMatchObject({
       attempts: 2,
-      usage: { inputTokens: 5, outputTokens: 0, totalTokens: 5 },
+      usage: {
+        inputTokens: estimatedTokens + 3,
+        outputTokens: 0,
+        totalTokens: estimatedTokens + 3,
+      },
       attemptMetrics: [
-        { attempt: 1, usageSource: 'reserved', usage: { totalTokens: 2 } },
+        {
+          attempt: 1,
+          usageSource: 'reserved',
+          usage: { totalTokens: estimatedTokens },
+        },
         { attempt: 2, usageSource: 'provider', usage: { totalTokens: 3 } },
       ],
     });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { reciprocalRankFusion, SearchService } from './search.service';
+import { prepareRerankCandidates, reciprocalRankFusion, SearchService } from './search.service';
 
 describe('reciprocalRankFusion', () => {
   it('rewards chunks returned by both retrievers', () => {
@@ -51,6 +51,10 @@ describe('SearchService publication filtering', () => {
       MODEL_CIRCUIT_HALF_OPEN_SUCCESS_THRESHOLD: 2,
       MODEL_CIRCUIT_HALF_OPEN_PROBE_TIMEOUT_MS: 90_000,
       MODEL_STREAM_INCLUDE_USAGE: true,
+      MODEL_TOKENIZER_ENCODING: 'o200k_base',
+      RAG_RERANK_CANDIDATE_LIMIT: 20,
+      RAG_RERANK_MAX_TOKENS: 30_000,
+      RAG_MAX_CHUNKS_PER_DOCUMENT: 3,
     };
     const config = {
       getOrThrow: vi.fn((key: string) => values[key]),
@@ -91,6 +95,7 @@ describe('SearchService publication filtering', () => {
     });
 
     expect(queries[0]).toContain("document.status = 'published'");
+    expect(queries[0]).toContain('chunk.embedding_model = $8');
   });
 });
 
@@ -140,6 +145,10 @@ describe('SearchService MMR diversification', () => {
       MODEL_CIRCUIT_HALF_OPEN_SUCCESS_THRESHOLD: 2,
       MODEL_CIRCUIT_HALF_OPEN_PROBE_TIMEOUT_MS: 90_000,
       MODEL_STREAM_INCLUDE_USAGE: true,
+      MODEL_TOKENIZER_ENCODING: 'o200k_base',
+      RAG_RERANK_CANDIDATE_LIMIT: 20,
+      RAG_RERANK_MAX_TOKENS: 30_000,
+      RAG_MAX_CHUNKS_PER_DOCUMENT: 3,
     };
     const config = {
       getOrThrow: vi.fn((key: string) => values[key]),
@@ -205,6 +214,67 @@ describe('SearchService MMR diversification', () => {
   });
 });
 
+describe('prepareRerankCandidates', () => {
+  it('deduplicates content and caps chunks from the same document before reranking', () => {
+    const first = searchHit('11111111-1111-4111-8111-111111111111', 'document-a', 'first');
+    const duplicate = searchHit('22222222-2222-4222-8222-222222222222', 'document-b', 'duplicate');
+    const sameDocument = searchHit(
+      '33333333-3333-4333-8333-333333333333',
+      'document-a',
+      'same document',
+    );
+    const result = prepareRerankCandidates(
+      'query',
+      [
+        { hit: first, contentSha256: 'same-hash' },
+        { hit: duplicate, contentSha256: 'same-hash' },
+        { hit: sameDocument, contentSha256: 'other-hash' },
+      ],
+      {
+        model: 'gpt-4o-mini',
+        tokenizerEncoding: 'o200k_base',
+        candidateLimit: 10,
+        maxTokens: 1_000,
+        maxChunksPerDocument: 1,
+      },
+    );
+
+    expect(result.hits).toEqual([first]);
+    expect(result.stats).toMatchObject({
+      inputCandidates: 3,
+      selectedCandidates: 1,
+      exactDuplicatesRemoved: 1,
+      perDocumentLimitRemoved: 1,
+    });
+  });
+
+  it('truncates reranker input to the configured token budget', () => {
+    const candidate = searchHit(
+      '55555555-5555-4555-8555-555555555555',
+      'document-a',
+      'long evidence '.repeat(200),
+    );
+    const result = prepareRerankCandidates(
+      'query',
+      [{ hit: candidate, contentSha256: 'long-hash' }],
+      {
+        model: 'gpt-4o-mini',
+        tokenizerEncoding: 'o200k_base',
+        candidateLimit: 10,
+        maxTokens: 40,
+        maxChunksPerDocument: 3,
+      },
+    );
+
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents[0]?.text.length).toBeLessThan(
+      `${candidate.title}\n${candidate.content}`.length,
+    );
+    expect(result.stats.truncatedDocuments).toBe(1);
+    expect(result.stats.inputTokens).toBeLessThanOrEqual(40);
+  });
+});
+
 function chunkRow(chunkId: string, content: string, embedding: string, documentId: string) {
   return {
     chunkId,
@@ -227,5 +297,27 @@ function chunkRow(chunkId: string, content: string, embedding: string, documentI
     folderId: null,
     tagIds: [],
     embedding,
+  };
+}
+
+function searchHit(chunkId: string, documentId: string, content: string) {
+  return {
+    chunkId,
+    documentId,
+    documentVersionId: '44444444-4444-4444-8444-444444444444',
+    title: 'Candidate',
+    content,
+    score: 1,
+    source: {
+      type: 'document' as const,
+      page: null,
+      slide: null,
+      sheet: null,
+      rowStart: null,
+      rowEnd: null,
+      heading: null,
+      offsetStart: 0,
+      offsetEnd: content.length,
+    },
   };
 }
