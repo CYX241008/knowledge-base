@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Inject, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Post, Query, UseGuards } from '@nestjs/common';
 import {
   SearchGovernanceQuerySchema,
   SearchDocumentsRequestSchema,
@@ -51,6 +51,20 @@ export class SearchController {
     @CurrentAuth() auth: AuthContext,
   ): Promise<ApiResponse<SearchPreferencesResponse>> {
     return buildSuccess(await this.systemGovernance.preferences(auth.tenantId));
+  }
+
+  @Get('chunks/:chunkId/source')
+  async source(
+    @Param('chunkId') chunkId: string,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<unknown>> {
+    return buildSuccess(
+      await this.searchService.source({
+        chunkId,
+        tenantId: auth.tenantId,
+        principalIds: auth.principalIds,
+      }),
+    );
   }
 
   @Post('feedback')

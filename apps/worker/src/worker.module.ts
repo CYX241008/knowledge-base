@@ -20,6 +20,7 @@ import {
   IngestionJobEntity,
   IngestionStageEntity,
   ModelUsageEventEntity,
+  DocumentProcessingMetricEntity,
 } from '@knowledge-base/database';
 import { ObjectStorage } from '@knowledge-base/object-storage';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -36,6 +37,7 @@ import { DocumentAclProjectionProcessor } from './document-acl-projection.proces
 import { DocumentSearchProjectionProcessor } from './document-search-projection.processor';
 import { TesseractPdfOcrService } from './tesseract-pdf-ocr.service';
 import { PdfVisionService } from './pdf-vision.service';
+import { DocumentProcessingMetricsService } from './document-processing-metrics.service';
 
 @Module({
   imports: [
@@ -65,6 +67,7 @@ import { PdfVisionService } from './pdf-vision.service';
       IngestionJobEntity,
       IngestionStageEntity,
       ModelUsageEventEntity,
+      DocumentProcessingMetricEntity,
     ]),
     BullModule.registerQueue(
       { name: DOCUMENT_INGESTION_QUEUE },
@@ -101,6 +104,7 @@ import { PdfVisionService } from './pdf-vision.service';
     ModelBudgetService,
     TesseractPdfOcrService,
     PdfVisionService,
+    DocumentProcessingMetricsService,
     SearchProjectionService,
   ],
 })

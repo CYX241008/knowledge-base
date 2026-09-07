@@ -30,6 +30,7 @@ import { OBJECT_STORAGE } from './worker.constants';
 import { SearchProjectionService } from './search-projection.service';
 import { TesseractPdfOcrService } from './tesseract-pdf-ocr.service';
 import { PdfVisionService } from './pdf-vision.service';
+import { DocumentProcessingMetricsService } from './document-processing-metrics.service';
 
 const PROCESSOR_VERSION = 'document-ingestion-v7';
 
@@ -60,6 +61,8 @@ export class DocumentIngestionProcessor extends WorkerHost {
     private readonly pdfOcr: TesseractPdfOcrService,
     @Inject(PdfVisionService)
     private readonly pdfVision: PdfVisionService,
+    @Inject(DocumentProcessingMetricsService)
+    private readonly processingMetrics: DocumentProcessingMetricsService,
   ) {
     super();
     this.parser = new DocumentParserRegistry({
@@ -77,6 +80,7 @@ export class DocumentIngestionProcessor extends WorkerHost {
         visionTimeoutMs: this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
         visionRequiredForMixedPages: this.config.getOrThrow('PDF_VISION_REQUIRED_FOR_MIXED_PAGES'),
         qualityMinScore: this.config.getOrThrow('PDF_QUALITY_MIN_SCORE'),
+        onProcessingMetric: this.processingMetrics.observe,
       },
     });
   }

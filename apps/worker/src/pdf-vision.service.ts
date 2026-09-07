@@ -89,6 +89,10 @@ export class PdfVisionService implements PdfVisionEngine {
       context: {
         tenantId: input.tenantId,
         runId: input.runId,
+        documentVersionId: input.runId,
+        pageNo: input.page,
+        assetId: input.figureId,
+        toolName: 'inspect_figure',
         source: 'ingestion',
       },
     });

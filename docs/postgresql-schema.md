@@ -395,6 +395,13 @@ ready | retrying | failed | cancelled`
 - 迁移时从现有 `document_chunk` 按缓存键回填最新向量。
 - 索引：`(tenant_id, embedding_model, updated_at DESC)`
 
+#### `document_processing_metric`
+
+- 用途：记录 PDF 每页 OCR 与视觉理解的状态、耗时、模型和缓存命中。
+- 字段：`tenant_id`、`document_version_id`、`page_no`、`operation`、
+  `provider`、`model?`、`status`、`duration_ms`、`cache_hit`、`asset_id?`、
+  `metadata jsonb`、`created_at`
+
 ### 4.5 文档审核
 
 #### `document_review_request`

@@ -27,6 +27,7 @@
     "e2e:document-review": "node scripts/e2e-document-review.mjs",
     "e2e:model-quota": "node scripts/e2e-model-global-quota.mjs",
     "eval:rag": "node scripts/evaluate-rag.mjs",
+    "eval:pdf": "pnpm --filter @knowledge-base/rag build && node scripts/evaluate-pdf-intelligence.mjs",
     "verify:staging": "node scripts/verify-staging-integrations.mjs",
     "ops:backup": "bash scripts/ops/backup.sh",
     "ops:restore": "bash scripts/ops/restore.sh",

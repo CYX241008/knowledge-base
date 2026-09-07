@@ -103,6 +103,8 @@ export type { KeywordIndexedChunk, KeywordSearchHit } from './retrieval/elastics
 export { maximalMarginalRelevance, parseVectorLiteral } from './retrieval/mmr';
 export type { MmrCandidate, MmrOptions } from './retrieval/mmr';
 export { evaluateRag } from './evaluation';
+export { evaluatePdfStructure } from './pdf-evaluation';
+export type { PdfEvaluationCase, PdfEvaluationReport } from './pdf-evaluation';
 export type {
   RagEvaluationCase,
   RagEvaluationCaseResult,
@@ -123,6 +125,8 @@ export type {
   PdfOcrInput,
   PdfOcrResult,
   PdfPageClassification,
+  PdfProcessingMetric,
+  PdfProcessingObserver,
   PdfVisionEngine,
   PdfVisionInput,
   PdfVisionKind,

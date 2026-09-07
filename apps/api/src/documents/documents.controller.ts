@@ -162,6 +162,62 @@ export class DocumentsController {
     return new StreamableFile(Buffer.from(bytes));
   }
 
+  @Get(':documentId/versions/:versionId/pages/:page')
+  async getStructuredPage(
+    @Param('documentId') documentId: string,
+    @Param('versionId') versionId: string,
+    @Param('page', ParseIntPipe) page: number,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<unknown>> {
+    await this.accessControl.assertDocumentRead(auth, documentId);
+    return buildSuccess(
+      await this.documentsService.getStructuredPage(auth.tenantId, documentId, versionId, page),
+    );
+  }
+
+  @Get(':documentId/versions/:versionId/tables/:tableId')
+  async getStructuredTable(
+    @Param('documentId') documentId: string,
+    @Param('versionId') versionId: string,
+    @Param('tableId') tableId: string,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<unknown>> {
+    await this.accessControl.assertDocumentRead(auth, documentId);
+    return buildSuccess(
+      await this.documentsService.getStructuredTable(auth.tenantId, documentId, versionId, tableId),
+    );
+  }
+
+  @Get(':documentId/versions/:versionId/figures/:figureId')
+  async getStructuredFigure(
+    @Param('documentId') documentId: string,
+    @Param('versionId') versionId: string,
+    @Param('figureId') figureId: string,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<unknown>> {
+    await this.accessControl.assertDocumentRead(auth, documentId);
+    return buildSuccess(
+      await this.documentsService.getStructuredFigure(
+        auth.tenantId,
+        documentId,
+        versionId,
+        figureId,
+      ),
+    );
+  }
+
+  @Get(':documentId/versions/:versionId/processing-metrics')
+  async getProcessingMetrics(
+    @Param('documentId') documentId: string,
+    @Param('versionId') versionId: string,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<unknown>> {
+    await this.accessControl.assertDocumentRead(auth, documentId);
+    return buildSuccess(
+      await this.documentsService.getProcessingMetrics(auth.tenantId, documentId, versionId),
+    );
+  }
+
   @Get(':documentId')
   async findOne(
     @Param('documentId') documentId: string,

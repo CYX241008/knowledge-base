@@ -1,9 +1,10 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
 import type {
   AnswerCitation,
   AnswerRunStatus,
+  AnswerToolCall,
   AskQuestionRequest,
   AskQuestionResponse,
   SearchDocumentHit,
@@ -36,6 +37,7 @@ import {
   ModelBudgetService,
   type ModelBudgetAssessment,
 } from '../observability/model-budget.service';
+import { DocumentToolsService } from './document-tools.service';
 
 export type AnswerStreamEvent =
   | {
@@ -45,6 +47,7 @@ export type AnswerStreamEvent =
       messageId: string;
       model: string;
       citations: AnswerCitation[];
+      toolCalls: AnswerToolCall[];
     }
   | { type: 'token'; content: string }
   | { type: 'done'; response: AskQuestionResponse };
@@ -60,6 +63,9 @@ export class AnswersService {
     @Inject(ModelMetricsService) private readonly modelMetrics: ModelMetricsService,
     @Inject(ModelQuotaService) private readonly modelQuota?: ModelQuotaService,
     @Inject(ModelBudgetService) private readonly modelBudget?: ModelBudgetService,
+    @Optional()
+    @Inject(DocumentToolsService)
+    private readonly documentTools?: DocumentToolsService,
   ) {
     this.chatGateway = createChatGateway({
       provider: this.config.getOrThrow('MODEL_PROVIDER'),
@@ -107,9 +113,26 @@ export class AnswersService {
         includeDiagnostics: input.includeDiagnostics,
         recordQuery: !input.includeDiagnostics,
       });
-      const relevantHits = search.hits.filter(
+      const searchedHits = search.hits.filter(
         (hit) => hit.score > this.config.getOrThrow('RAG_MIN_RELEVANCE'),
       );
+      const tools = this.documentTools
+        ? await this.documentTools.enrich(auth, input.question, searchedHits)
+        : { hits: searchedHits, toolCalls: [] };
+      const relevantHits = tools.hits;
+      const toolCalls: AnswerToolCall[] = [
+        {
+          name: 'search_document',
+          status: search.hits.length > 0 ? 'success' : 'skipped',
+          durationMs: search.durationMs,
+          documentId: null,
+          documentVersionId: null,
+          page: null,
+          resourceId: null,
+          resultCount: search.hits.length,
+        },
+        ...tools.toolCalls,
+      ];
       const history = await this.loadHistory(auth, conversation.id, userMessageId);
       const messageId = randomUUID();
       const requestedModel = this.config.getOrThrow('CHAT_MODEL');
@@ -190,6 +213,7 @@ export class AnswersService {
         messageId,
         model,
         citations,
+        toolCalls,
       };
 
       let answer = '';
@@ -235,6 +259,7 @@ export class AnswersService {
         degraded,
         degradationReason,
         citations,
+        toolCalls,
         ...(search.diagnostics ? { retrievalDiagnostics: search.diagnostics } : {}),
       };
       await this.persistAnswer(
@@ -308,6 +333,7 @@ export class AnswersService {
           degraded: false,
           degradationReason: null,
           estimatedCostUsd: 0,
+          toolTrace: [],
           completedAt: null,
         }),
       );
@@ -412,6 +438,7 @@ export class AnswersService {
           degraded: response.degraded ?? false,
           degradationReason: response.degradationReason ?? null,
           estimatedCostUsd,
+          toolTrace: (response.toolCalls ?? []) as never,
           completedAt: new Date(),
         },
       );

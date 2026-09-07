@@ -1,0 +1,21 @@
+{
+  "documents": [
+    {
+      "path": "packages/rag/test-fixtures/parser-sample.pdf",
+      "cases": [
+        {
+          "page": 1,
+          "classification": "mixed",
+          "requiredText": ["first page used for parser verification"],
+          "requireBoundingBoxes": true
+        },
+        {
+          "page": 2,
+          "classification": "native",
+          "requiredText": ["page anchors preserve the source page number"],
+          "requireBoundingBoxes": true
+        }
+      ]
+    }
+  ]
+}

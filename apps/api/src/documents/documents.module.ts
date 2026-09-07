@@ -20,5 +20,6 @@ import { KnowledgeModule } from '../knowledge/knowledge.module';
   ],
   controllers: [DocumentsController],
   providers: [DocumentsService],
+  exports: [DocumentsService],
 })
 export class DocumentsModule {}

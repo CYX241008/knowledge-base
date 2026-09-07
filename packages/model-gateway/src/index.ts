@@ -42,6 +42,10 @@ export type ModelCallContext = {
   userId?: string;
   runId?: string;
   source?: 'answer' | 'search' | 'ingestion' | 'health';
+  documentVersionId?: string;
+  pageNo?: number;
+  assetId?: string;
+  toolName?: string;
 };
 
 export type EmbeddingRequest = {

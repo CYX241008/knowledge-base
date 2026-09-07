@@ -5,10 +5,17 @@ import { AnswersController } from './answers.controller';
 import { AnswersService } from './answers.service';
 import { ConversationRetentionService } from './conversation-retention.service';
 import { ConversationsService } from './conversations.service';
+import { DocumentsModule } from '../documents/documents.module';
+import { DocumentToolsService } from './document-tools.service';
 
 @Module({
-  imports: [AccessControlModule, SearchModule],
+  imports: [AccessControlModule, SearchModule, DocumentsModule],
   controllers: [AnswersController],
-  providers: [AnswersService, ConversationsService, ConversationRetentionService],
+  providers: [
+    AnswersService,
+    ConversationsService,
+    ConversationRetentionService,
+    DocumentToolsService,
+  ],
 })
 export class AnswersModule {}

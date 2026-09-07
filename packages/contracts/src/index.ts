@@ -730,6 +730,28 @@ export const AnswerCitationSchema = z.object({
 });
 export type AnswerCitation = z.infer<typeof AnswerCitationSchema>;
 
+export const answerToolNames = [
+  'search_document',
+  'read_page',
+  'get_table',
+  'inspect_figure',
+  'get_source',
+] as const;
+export const AnswerToolNameSchema = z.enum(answerToolNames);
+export type AnswerToolName = z.infer<typeof AnswerToolNameSchema>;
+
+export const AnswerToolCallSchema = z.object({
+  name: AnswerToolNameSchema,
+  status: z.enum(['success', 'skipped', 'failed']),
+  durationMs: z.number().int().nonnegative(),
+  documentId: z.string().uuid().nullable(),
+  documentVersionId: z.string().uuid().nullable(),
+  page: z.number().int().positive().nullable(),
+  resourceId: z.string().nullable(),
+  resultCount: z.number().int().nonnegative(),
+});
+export type AnswerToolCall = z.infer<typeof AnswerToolCallSchema>;
+
 export const AskQuestionResponseSchema = z.object({
   runId: z.string().uuid(),
   conversationId: z.string().uuid(),
@@ -740,6 +762,7 @@ export const AskQuestionResponseSchema = z.object({
   degraded: z.boolean().optional(),
   degradationReason: z.string().nullable().optional(),
   citations: z.array(AnswerCitationSchema),
+  toolCalls: z.array(AnswerToolCallSchema).optional(),
   retrievalDiagnostics: SearchDiagnosticsSchema.optional(),
 });
 export type AskQuestionResponse = z.infer<typeof AskQuestionResponseSchema>;

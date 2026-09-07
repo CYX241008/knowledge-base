@@ -1104,6 +1104,18 @@ export class ModelUsageEventEntity {
   @Column('varchar', { name: 'error_code', length: 128, nullable: true })
   errorCode!: string | null;
 
+  @Column('uuid', { name: 'document_version_id', nullable: true })
+  documentVersionId!: string | null;
+
+  @Column('integer', { name: 'page_no', nullable: true })
+  pageNo!: number | null;
+
+  @Column('varchar', { name: 'asset_id', length: 128, nullable: true })
+  assetId!: string | null;
+
+  @Column('varchar', { name: 'tool_name', length: 64, nullable: true })
+  toolName!: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 }
@@ -1154,11 +1166,45 @@ export class AnswerRunEntity {
   })
   estimatedCostUsd!: number;
 
+  @Column('jsonb', { name: 'tool_trace', default: () => "'[]'::jsonb" })
+  toolTrace!: Array<Record<string, unknown>>;
+
   @CreateDateColumn({ name: 'started_at', type: 'timestamptz' })
   startedAt!: Date;
 
   @Column('timestamptz', { name: 'completed_at', nullable: true })
   completedAt!: Date | null;
+}
+
+@Entity('document_processing_metric')
+@Index(['tenantId', 'documentVersionId', 'createdAt'])
+export class DocumentProcessingMetricEntity {
+  @PrimaryColumn('uuid')
+  id!: string;
+  @Column('uuid', { name: 'tenant_id' })
+  tenantId!: string;
+  @Column('uuid', { name: 'document_version_id' })
+  documentVersionId!: string;
+  @Column('integer', { name: 'page_no' })
+  pageNo!: number;
+  @Column('varchar', { length: 32 })
+  operation!: 'ocr' | 'vision';
+  @Column('varchar', { length: 64 })
+  provider!: string;
+  @Column('varchar', { length: 128, nullable: true })
+  model!: string | null;
+  @Column('varchar', { length: 16 })
+  status!: 'success' | 'failed' | 'skipped';
+  @Column('integer', { name: 'duration_ms' })
+  durationMs!: number;
+  @Column('boolean', { name: 'cache_hit', default: false })
+  cacheHit!: boolean;
+  @Column('varchar', { name: 'asset_id', length: 128, nullable: true })
+  assetId!: string | null;
+  @Column('jsonb', { default: () => "'{}'::jsonb" })
+  metadata!: Record<string, unknown>;
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt!: Date;
 }
 
 @Entity('model_budget_alert')
@@ -1378,6 +1424,7 @@ export const databaseEntities = [
   ChatMessageEntity,
   ChatCitationEntity,
   ModelUsageEventEntity,
+  DocumentProcessingMetricEntity,
   AnswerRunEntity,
   ModelBudgetAlertEntity,
   IngestionJobEntity,

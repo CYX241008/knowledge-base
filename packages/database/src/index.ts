@@ -19,6 +19,7 @@ import { EmbeddingCacheBackfill1788365100000 } from './migrations/1788365100000-
 import { ModelBudgetGovernance1788624000000 } from './migrations/1788624000000-model-budget-governance';
 import { PdfStructure1788710400000 } from './migrations/1788710400000-pdf-structure';
 import { PdfIntelligence1788796800000 } from './migrations/1788796800000-pdf-intelligence';
+import { AgenticPdfTools1788883200000 } from './migrations/1788883200000-agentic-pdf-tools';
 
 export * from './entities';
 
@@ -41,6 +42,7 @@ export const databaseMigrations = [
   ModelBudgetGovernance1788624000000,
   PdfStructure1788710400000,
   PdfIntelligence1788796800000,
+  AgenticPdfTools1788883200000,
 ] as const;
 
 export function createDatabaseOptions(

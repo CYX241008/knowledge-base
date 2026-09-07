@@ -108,7 +108,25 @@ export type PdfVisionInput = {
   nearbyText: string;
   tenantId?: string;
   runId?: string;
+  figureId?: string;
 };
+
+export type PdfProcessingMetric = {
+  operation: 'ocr' | 'vision';
+  page: number;
+  assetId?: string;
+  provider: string;
+  model?: string;
+  status: 'success' | 'failed' | 'skipped';
+  durationMs: number;
+  cacheHit: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+export type PdfProcessingObserver = (
+  metric: PdfProcessingMetric,
+  context: { tenantId?: string; documentVersionId?: string },
+) => void | Promise<void>;
 
 export type PdfVisionResult = {
   kind: PdfVisionKind;

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
 import type {
@@ -403,9 +403,7 @@ export class SearchService {
         input.text,
         hits.flatMap((hit) => {
           const row = byId.get(hit.chunkId);
-          return row
-            ? [{ hit, contentSha256: row.embeddingInputSha256 ?? row.contentSha256 }]
-            : [];
+          return row ? [{ hit, contentSha256: row.embeddingInputSha256 ?? row.contentSha256 }] : [];
         }),
         {
           model: rerankerModel,
@@ -542,6 +540,63 @@ export class SearchService {
       }
       throw error;
     }
+  }
+
+  async source(input: {
+    chunkId: string;
+    tenantId: string;
+    principalIds: string[];
+  }): Promise<SearchDocumentHit> {
+    const rows = await this.dataSource.query<ChunkRow[]>(
+      `
+      SELECT chunk.id AS "chunkId",
+             chunk.document_id AS "documentId",
+             chunk.document_version_id AS "documentVersionId",
+             chunk.ordinal,
+             chunk.content_sha256 AS "contentSha256",
+             chunk.embedding_input_sha256 AS "embeddingInputSha256",
+             document.title,
+             chunk.content,
+             chunk.contextual_content AS "contextualContent",
+             chunk.context_summary AS "contextSummary",
+             chunk.anchor_type AS "anchorType",
+             chunk.page_no AS "pageNo",
+             chunk.slide_no AS "slideNo",
+             chunk.sheet_name AS "sheetName",
+             chunk.row_start AS "rowStart",
+             chunk.row_end AS "rowEnd",
+             chunk.heading,
+             chunk.element_type AS "elementType",
+             chunk.element_ids AS "elementIds",
+             chunk.section_path AS "sectionPath",
+             chunk.table_id AS "tableId",
+             chunk.figure_id AS "figureId",
+             chunk.bounding_boxes AS "boundingBoxes",
+             chunk.source_confidence AS "sourceConfidence",
+             chunk.markdown_offset_start AS "offsetStart",
+             chunk.markdown_offset_end AS "offsetEnd",
+             chunk.embedding::text AS embedding,
+             document.space_id AS "spaceId",
+             document.folder_id AS "folderId",
+             ARRAY[]::uuid[] AS "tagIds"
+      FROM document_chunk chunk
+      INNER JOIN document ON document.id = chunk.document_id
+      WHERE chunk.id = $1::uuid
+        AND chunk.tenant_id = $2::uuid
+        AND chunk.principal_ids && $3::varchar[]
+        AND document.deleted_at IS NULL
+        AND document.status = 'published'
+        AND document.current_ready_version_id = chunk.document_version_id
+      LIMIT 1
+      `,
+      [input.chunkId, input.tenantId, input.principalIds],
+    );
+    const hit = hydrateRankedHits(
+      rows.map((row) => ({ id: row.chunkId, score: 1 })),
+      new Map(rows.map((row) => [row.chunkId, row])),
+    )[0];
+    if (!hit) throw new NotFoundException(`Search source ${input.chunkId} not found`);
+    return hit;
   }
 
   async governance(tenantId: string, days: number): Promise<SearchGovernanceResponse> {

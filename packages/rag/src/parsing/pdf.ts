@@ -5,6 +5,7 @@ import type {
   PdfOcrEngine,
   PdfPageClassification,
   PdfVisionEngine,
+  PdfProcessingObserver,
   StructuredDocument,
   StructuredDocumentElement,
   StructuredDocumentPage,
@@ -45,6 +46,7 @@ export type PdfParserOptions = {
   visionTimeoutMs?: number;
   visionRequiredForMixedPages?: boolean;
   qualityMinScore?: number;
+  onProcessingMetric?: PdfProcessingObserver;
 };
 
 type PageImage = {
@@ -66,8 +68,10 @@ export class PdfDocumentParser implements DocumentParser {
   readonly name = 'pdf-layout';
   readonly version = '3.0.0';
 
-  private readonly options: Required<Omit<PdfParserOptions, 'ocrEngine' | 'visionEngine'>> &
-    Pick<PdfParserOptions, 'ocrEngine' | 'visionEngine'>;
+  private readonly options: Required<
+    Omit<PdfParserOptions, 'ocrEngine' | 'visionEngine' | 'onProcessingMetric'>
+  > &
+    Pick<PdfParserOptions, 'ocrEngine' | 'visionEngine' | 'onProcessingMetric'>;
 
   constructor(options: PdfParserOptions = {}) {
     this.options = {
@@ -84,6 +88,7 @@ export class PdfDocumentParser implements DocumentParser {
       visionTimeoutMs: options.visionTimeoutMs ?? 90_000,
       visionRequiredForMixedPages: options.visionRequiredForMixedPages ?? false,
       qualityMinScore: options.qualityMinScore ?? 75,
+      onProcessingMetric: options.onProcessingMetric,
     };
   }
 
@@ -119,7 +124,7 @@ export class PdfDocumentParser implements DocumentParser {
       markRepeatedMargins(layoutPages, this.options.headerFooterMinPageRatio);
 
       const pages = this.createPages(layoutPages, images.byPage);
-      await this.applyOcr(parser, pages, warnings);
+      await this.applyOcr(parser, pages, warnings, input);
       this.attachTables(pages, tables);
       this.attachImages(pages, images.byPage);
       await this.applyVision(pages, images.byPage, warnings, input);
@@ -244,6 +249,7 @@ export class PdfDocumentParser implements DocumentParser {
     parser: PDFParse,
     pages: StructuredDocumentPage[],
     warnings: string[],
+    input: ParseInput,
   ): Promise<void> {
     const scannedPages = pages.filter((page) => page.classification === 'scanned');
     if (scannedPages.length === 0) return;
@@ -278,6 +284,7 @@ export class PdfDocumentParser implements DocumentParser {
         continue;
       }
       try {
+        const startedAt = Date.now();
         const result = await withTimeout(
           this.options.ocrEngine.recognize({
             page: page.page,
@@ -323,6 +330,18 @@ export class PdfDocumentParser implements DocumentParser {
             `PDF page ${page.page} OCR confidence ${result.confidence.toFixed(1)} is below ${this.options.ocrMinConfidence}`,
           );
         }
+        await this.options.onProcessingMetric?.(
+          {
+            operation: 'ocr',
+            page: page.page,
+            provider: 'tesseract',
+            status: 'success',
+            durationMs: Date.now() - startedAt,
+            cacheHit: false,
+            metadata: { confidence: result.confidence },
+          },
+          { tenantId: input.tenantId, documentVersionId: input.documentVersionId },
+        );
       } catch (error) {
         warnings.push(`PDF page ${page.page} OCR failed: ${errorMessage(error)}`);
       }
@@ -509,6 +528,7 @@ export class PdfDocumentParser implements DocumentParser {
       const element = page.elements.find((candidate) => candidate.figureId === image.id);
       if (!element) continue;
       try {
+        const startedAt = Date.now();
         const result = await withTimeout(
           this.options.visionEngine.analyze({
             page: page.page,
@@ -523,6 +543,7 @@ export class PdfDocumentParser implements DocumentParser {
               .slice(0, 2_000),
             tenantId: input.tenantId,
             runId: input.documentVersionId,
+            figureId: image.id,
           }),
           this.options.visionTimeoutMs,
           `PDF page ${page.page} image analysis timed out`,
@@ -534,6 +555,19 @@ export class PdfDocumentParser implements DocumentParser {
         element.searchable = result.searchable && Boolean(result.description.trim());
         element.source = 'vision';
         element.confidence = result.confidence;
+        await this.options.onProcessingMetric?.(
+          {
+            operation: 'vision',
+            page: page.page,
+            assetId: image.id,
+            provider: 'openai-compatible',
+            status: 'success',
+            durationMs: Date.now() - startedAt,
+            cacheHit: false,
+            metadata: { kind: result.kind, confidence: result.confidence },
+          },
+          { tenantId: input.tenantId, documentVersionId: input.documentVersionId },
+        );
       } catch (error) {
         warnings.push(
           `PDF page ${page.page} image ${image.filename} analysis failed: ${errorMessage(error)}`,

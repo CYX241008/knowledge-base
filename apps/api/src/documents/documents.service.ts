@@ -542,6 +542,84 @@ export class DocumentsService {
     );
     return renderPdfPagePng(source, page);
   }
+
+  async getStructuredPage(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+    page: number,
+  ): Promise<StructuredDocument['pages'][number]> {
+    const structure = await this.getStructure(tenantId, documentId, versionId);
+    const result = structure.pages.find((item) => item.page === page);
+    if (!result) throw new NotFoundException(`PDF page ${page} was not found`);
+    return result;
+  }
+
+  async getStructuredTable(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+    tableId: string,
+  ): Promise<StructuredDocument['tables'][number]> {
+    const structure = await this.getStructure(tenantId, documentId, versionId);
+    const result = structure.tables.find((item) => item.id === tableId);
+    if (!result) throw new NotFoundException(`PDF table ${tableId} was not found`);
+    return result;
+  }
+
+  async getStructuredFigure(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+    figureId: string,
+  ): Promise<StructuredDocument['pages'][number]['elements'][number]> {
+    const structure = await this.getStructure(tenantId, documentId, versionId);
+    const result = structure.pages
+      .flatMap((page) => page.elements)
+      .find((element) => element.figureId === figureId);
+    if (!result) throw new NotFoundException(`PDF figure ${figureId} was not found`);
+    return result;
+  }
+
+  async getProcessingMetrics(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+  ): Promise<{
+    operations: unknown[];
+    modelUsage: unknown[];
+  }> {
+    const version = await this.versionRepository.findOneBy({
+      id: versionId,
+      documentId,
+      tenantId,
+    });
+    if (!version) throw new NotFoundException(`Document version ${versionId} not found`);
+    const [operations, modelUsage] = await Promise.all([
+      this.dataSource.query(
+        `SELECT page_no AS "pageNo", operation, provider, model, status,
+                duration_ms AS "durationMs", cache_hit AS "cacheHit",
+                asset_id AS "assetId", metadata, created_at AS "createdAt"
+         FROM document_processing_metric
+         WHERE tenant_id = $1 AND document_version_id = $2
+         ORDER BY created_at, page_no`,
+        [tenantId, versionId],
+      ),
+      this.dataSource.query(
+        `SELECT page_no AS "pageNo", asset_id AS "assetId", tool_name AS "toolName",
+                operation, model, SUM(input_tokens)::int AS "inputTokens",
+                SUM(output_tokens)::int AS "outputTokens",
+                SUM(estimated_cost_usd)::float AS "estimatedCostUsd",
+                SUM(attempt_duration_ms)::int AS "durationMs"
+         FROM model_usage_event
+         WHERE tenant_id = $1 AND document_version_id = $2
+         GROUP BY page_no, asset_id, tool_name, operation, model
+         ORDER BY page_no NULLS LAST, operation, model`,
+        [tenantId, versionId],
+      ),
+    ]);
+    return { operations, modelUsage };
+  }
 }
 
 function isStructuredDocument(value: unknown): value is StructuredDocument {

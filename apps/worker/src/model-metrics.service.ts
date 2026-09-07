@@ -61,6 +61,10 @@ export class ModelMetricsService {
           callDurationMs: metric.durationMs,
           firstTokenDurationMs: metric.firstTokenDurationMs ?? null,
           errorCode: attempt.errorCode ?? null,
+          documentVersionId: metric.context?.documentVersionId ?? null,
+          pageNo: metric.context?.pageNo ?? null,
+          assetId: metric.context?.assetId ?? null,
+          toolName: metric.context?.toolName ?? null,
         })),
       );
     } catch (error) {
