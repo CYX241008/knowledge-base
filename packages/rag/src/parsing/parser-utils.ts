@@ -74,6 +74,28 @@ export function extensionForMimeType(mimeType: string): string {
   return extensions[mimeType.toLowerCase()] ?? 'bin';
 }
 
+export function imageDimensions(
+  bytes: Uint8Array,
+  mimeType = sniffImageMimeType(bytes, ''),
+): { width: number; height: number } | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (mimeType === 'image/png' && bytes.byteLength >= 24) {
+    return positiveDimensions(view.getUint32(16), view.getUint32(20));
+  }
+  if (mimeType === 'image/gif' && bytes.byteLength >= 10) {
+    return positiveDimensions(view.getUint16(6, true), view.getUint16(8, true));
+  }
+  if (mimeType === 'image/jpeg') return jpegDimensions(bytes, view);
+  if (
+    mimeType === 'image/webp' &&
+    bytes.byteLength >= 30 &&
+    new TextDecoder().decode(bytes.slice(12, 16)) === 'VP8X'
+  ) {
+    return positiveDimensions(readUint24(bytes, 24) + 1, readUint24(bytes, 27) + 1);
+  }
+  return undefined;
+}
+
 export function withTimeout<T>(
   operation: Promise<T>,
   milliseconds: number,
@@ -92,4 +114,46 @@ export function withTimeout<T>(
       },
     );
   });
+}
+
+function jpegDimensions(
+  bytes: Uint8Array,
+  view: DataView,
+): { width: number; height: number } | undefined {
+  if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
+  let offset = 2;
+  while (offset + 8 < bytes.byteLength) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = bytes[offset + 1] ?? 0;
+    if (marker === 0xd8 || marker === 0xd9) {
+      offset += 2;
+      continue;
+    }
+    const length = view.getUint16(offset + 2);
+    if (length < 2 || offset + length + 2 > bytes.byteLength) return undefined;
+    if (
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    ) {
+      return positiveDimensions(view.getUint16(offset + 7), view.getUint16(offset + 5));
+    }
+    offset += length + 2;
+  }
+  return undefined;
+}
+
+function readUint24(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8) | ((bytes[offset + 2] ?? 0) << 16);
+}
+
+function positiveDimensions(
+  width: number,
+  height: number,
+): { width: number; height: number } | undefined {
+  return width > 0 && height > 0 ? { width, height } : undefined;
 }

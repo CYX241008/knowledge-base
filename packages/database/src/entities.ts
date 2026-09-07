@@ -666,6 +666,9 @@ export class DocumentSourceAnchorEntity {
   @Column('integer', { name: 'row_end', nullable: true })
   rowEnd!: number | null;
 
+  @Column('varchar', { name: 'cell_range', length: 64, nullable: true })
+  cellRange!: string | null;
+
   @Column('text', { nullable: true })
   heading!: string | null;
 
@@ -709,6 +712,24 @@ export class DocumentAssetEntity {
 
   @Column('integer', { name: 'page_no', nullable: true })
   pageNo!: number | null;
+
+  @Column('integer', { name: 'slide_no', nullable: true })
+  slideNo!: number | null;
+
+  @Column('varchar', { name: 'sheet_name', length: 255, nullable: true })
+  sheetName!: string | null;
+
+  @Column('integer', { name: 'row_start', nullable: true })
+  rowStart!: number | null;
+
+  @Column('integer', { name: 'row_end', nullable: true })
+  rowEnd!: number | null;
+
+  @Column('varchar', { name: 'cell_range', length: 64, nullable: true })
+  cellRange!: string | null;
+
+  @Column('text', { nullable: true })
+  heading!: string | null;
 
   @Column('integer')
   ordinal!: number;
@@ -770,6 +791,9 @@ export class DocumentChunkEntity {
 
   @Column('integer', { name: 'row_end', nullable: true })
   rowEnd!: number | null;
+
+  @Column('varchar', { name: 'cell_range', length: 64, nullable: true })
+  cellRange!: string | null;
 
   @Column('text', { nullable: true })
   heading!: string | null;
@@ -1185,8 +1209,14 @@ export class DocumentProcessingMetricEntity {
   tenantId!: string;
   @Column('uuid', { name: 'document_version_id' })
   documentVersionId!: string;
-  @Column('integer', { name: 'page_no' })
-  pageNo!: number;
+  @Column('integer', { name: 'page_no', nullable: true })
+  pageNo!: number | null;
+  @Column('varchar', { name: 'document_format', length: 32 })
+  documentFormat!: 'pdf' | 'markdown' | 'text' | 'docx' | 'pptx' | 'xlsx';
+  @Column('varchar', { name: 'location_type', length: 32 })
+  locationType!: 'document' | 'section' | 'page' | 'slide' | 'sheet';
+  @Column('jsonb')
+  location!: Record<string, unknown>;
   @Column('varchar', { length: 32 })
   operation!: 'ocr' | 'vision';
   @Column('varchar', { length: 64 })

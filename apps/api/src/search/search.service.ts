@@ -85,6 +85,7 @@ type ChunkRow = {
   sheetName: string | null;
   rowStart: number | null;
   rowEnd: number | null;
+  cellRange: string | null;
   heading: string | null;
   elementType: string | null;
   elementIds: string[];
@@ -344,6 +345,7 @@ export class SearchService {
                chunk.sheet_name AS "sheetName",
                chunk.row_start AS "rowStart",
                chunk.row_end AS "rowEnd",
+               chunk.cell_range AS "cellRange",
                chunk.heading,
                chunk.element_type AS "elementType",
                chunk.element_ids AS "elementIds",
@@ -413,7 +415,11 @@ export class SearchService {
             this.config.getOrThrow('RAG_RERANK_CANDIDATE_LIMIT'),
           ),
           maxTokens: this.config.getOrThrow('RAG_RERANK_MAX_TOKENS'),
-          maxChunksPerDocument: this.config.getOrThrow('RAG_MAX_CHUNKS_PER_DOCUMENT'),
+          maxChunksPerDocument: maxChunksPerDocumentForSource(
+            input.source,
+            this.config.getOrThrow('RAG_MAX_CHUNKS_PER_DOCUMENT'),
+            candidateLimit,
+          ),
         },
       );
       const rerankStartedAt = Date.now();
@@ -565,6 +571,7 @@ export class SearchService {
              chunk.sheet_name AS "sheetName",
              chunk.row_start AS "rowStart",
              chunk.row_end AS "rowEnd",
+             chunk.cell_range AS "cellRange",
              chunk.heading,
              chunk.element_type AS "elementType",
              chunk.element_ids AS "elementIds",
@@ -752,6 +759,14 @@ export class SearchService {
   }
 }
 
+export function maxChunksPerDocumentForSource(
+  source: SearchQuerySource | undefined,
+  answerLimit: number,
+  candidateLimit: number,
+): number {
+  return source === 'answer' ? answerLimit : candidateLimit;
+}
+
 function buildFacets(rows: ChunkRow[]): SearchFacets {
   const documents = new Map<
     string,
@@ -804,6 +819,7 @@ function hydrateRankedHits(
         sheet: row.sheetName,
         rowStart: row.rowStart,
         rowEnd: row.rowEnd,
+        range: row.cellRange,
         heading: row.heading,
         offsetStart: row.offsetStart,
         offsetEnd: row.offsetEnd,

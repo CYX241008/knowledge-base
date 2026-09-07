@@ -1,15 +1,16 @@
 import { PDFParse } from 'pdf-parse';
 import type { DocumentParser, ParsedAsset, ParseInput, ParseResult, SourceAnchor } from '../index';
+import { pageLocation } from '../structured-document';
 import type {
+  DocumentProcessingObserver,
   DocumentQualityReport,
-  PdfOcrEngine,
+  OcrEngine,
   PdfPageClassification,
-  PdfVisionEngine,
-  PdfProcessingObserver,
   StructuredDocument,
   StructuredDocumentElement,
   StructuredDocumentPage,
   StructuredDocumentTable,
+  VisionEngine,
 } from '../structured-document';
 import {
   createNativePageElements,
@@ -33,20 +34,23 @@ const MAX_EMBEDDED_IMAGES = 500;
 const PARSE_TIMEOUT_MS = 60_000;
 
 export type PdfParserOptions = {
-  ocrEngine?: PdfOcrEngine;
+  ocrEngine?: OcrEngine;
   ocrMaxPages?: number;
   ocrRenderWidth?: number;
   ocrTimeoutMs?: number;
   ocrMinConfidence?: number;
+  ocrProvider?: string;
   nativeTextMinCharacters?: number;
   headerFooterMinPageRatio?: number;
-  visionEngine?: PdfVisionEngine;
+  visionEngine?: VisionEngine;
   visionMaxImages?: number;
   visionMinPixels?: number;
   visionTimeoutMs?: number;
   visionRequiredForMixedPages?: boolean;
+  visionProvider?: string;
+  visionModel?: string;
   qualityMinScore?: number;
-  onProcessingMetric?: PdfProcessingObserver;
+  onProcessingMetric?: DocumentProcessingObserver;
 };
 
 type PageImage = {
@@ -69,9 +73,9 @@ export class PdfDocumentParser implements DocumentParser {
   readonly version = '3.0.0';
 
   private readonly options: Required<
-    Omit<PdfParserOptions, 'ocrEngine' | 'visionEngine' | 'onProcessingMetric'>
+    Omit<PdfParserOptions, 'ocrEngine' | 'visionEngine' | 'visionModel' | 'onProcessingMetric'>
   > &
-    Pick<PdfParserOptions, 'ocrEngine' | 'visionEngine' | 'onProcessingMetric'>;
+    Pick<PdfParserOptions, 'ocrEngine' | 'visionEngine' | 'visionModel' | 'onProcessingMetric'>;
 
   constructor(options: PdfParserOptions = {}) {
     this.options = {
@@ -80,6 +84,7 @@ export class PdfDocumentParser implements DocumentParser {
       ocrRenderWidth: options.ocrRenderWidth ?? 1_800,
       ocrTimeoutMs: options.ocrTimeoutMs ?? 120_000,
       ocrMinConfidence: options.ocrMinConfidence ?? 40,
+      ocrProvider: options.ocrProvider ?? 'tesseract',
       nativeTextMinCharacters: options.nativeTextMinCharacters ?? 40,
       headerFooterMinPageRatio: options.headerFooterMinPageRatio ?? 0.6,
       visionEngine: options.visionEngine,
@@ -87,6 +92,8 @@ export class PdfDocumentParser implements DocumentParser {
       visionMinPixels: options.visionMinPixels ?? 40_000,
       visionTimeoutMs: options.visionTimeoutMs ?? 90_000,
       visionRequiredForMixedPages: options.visionRequiredForMixedPages ?? false,
+      visionProvider: options.visionProvider ?? 'openai-compatible',
+      visionModel: options.visionModel,
       qualityMinScore: options.qualityMinScore ?? 75,
       onProcessingMetric: options.onProcessingMetric,
     };
@@ -135,9 +142,9 @@ export class PdfDocumentParser implements DocumentParser {
       }
 
       const structure: StructuredDocument = {
-        version: 1,
+        version: 2,
         format: 'pdf',
-        pages,
+        units: pages,
         tables,
         quality: buildQualityReport(
           pages,
@@ -227,7 +234,8 @@ export class PdfDocumentParser implements DocumentParser {
         .reduce((sum, line) => sum + line.text.replace(/\s+/gu, '').length, 0);
       const imageCount = imagesByPage.get(layout.page)?.length ?? 0;
       return {
-        page: layout.page,
+        id: `page-${layout.page}`,
+        location: pageLocation(layout.page),
         width: layout.width,
         height: layout.height,
         classification: classifyPdfPage(
@@ -265,7 +273,7 @@ export class PdfDocumentParser implements DocumentParser {
 
     const screenshots = await withTimeout(
       parser.getScreenshot({
-        partial: scannedPages.map((page) => page.page),
+        partial: scannedPages.map((page) => page.location.page),
         desiredWidth: this.options.ocrRenderWidth,
         imageBuffer: true,
         imageDataUrl: false,
@@ -278,22 +286,39 @@ export class PdfDocumentParser implements DocumentParser {
     );
 
     for (const page of scannedPages) {
-      const screenshot = screenshotByPage.get(page.page);
+      const pageNumber = page.location.page;
+      const screenshot = screenshotByPage.get(pageNumber);
       if (!screenshot?.data.byteLength) {
-        warnings.push(`PDF page ${page.page} could not be rendered for OCR`);
+        warnings.push(`PDF page ${pageNumber} could not be rendered for OCR`);
+        await this.options.onProcessingMetric?.(
+          {
+            operation: 'ocr',
+            format: 'pdf',
+            location: pageLocation(pageNumber),
+            provider: this.options.ocrProvider,
+            status: 'skipped',
+            durationMs: 0,
+            cacheHit: false,
+            metadata: { reason: 'page_render_failed' },
+          },
+          { tenantId: input.tenantId, documentVersionId: input.documentVersionId },
+        );
         continue;
       }
+      const startedAt = Date.now();
       try {
-        const startedAt = Date.now();
         const result = await withTimeout(
           this.options.ocrEngine.recognize({
-            page: page.page,
+            format: 'pdf',
+            location: pageLocation(pageNumber),
             image: screenshot.data,
             width: screenshot.width,
             height: screenshot.height,
+            tenantId: input.tenantId,
+            runId: input.documentVersionId,
           }),
           this.options.ocrTimeoutMs,
-          `PDF page ${page.page} OCR timed out`,
+          `PDF page ${pageNumber} OCR timed out`,
         );
         const blocks = result.blocks.length
           ? result.blocks
@@ -308,9 +333,9 @@ export class PdfDocumentParser implements DocumentParser {
           ...blocks
             .filter((block) => block.text.trim())
             .map((block, index): StructuredDocumentElement => ({
-              id: `p${page.page}-ocr-${index + 1}`,
+              id: `p${pageNumber}-ocr-${index + 1}`,
               kind: 'paragraph',
-              page: page.page,
+              location: pageLocation(pageNumber),
               order: retainedMargins.length + index + 1,
               text: cleanMarkdown(block.text),
               markdown: cleanMarkdown(block.text),
@@ -327,14 +352,15 @@ export class PdfDocumentParser implements DocumentParser {
         page.ocrConfidence = result.confidence;
         if (result.confidence < this.options.ocrMinConfidence) {
           warnings.push(
-            `PDF page ${page.page} OCR confidence ${result.confidence.toFixed(1)} is below ${this.options.ocrMinConfidence}`,
+            `PDF page ${pageNumber} OCR confidence ${result.confidence.toFixed(1)} is below ${this.options.ocrMinConfidence}`,
           );
         }
         await this.options.onProcessingMetric?.(
           {
             operation: 'ocr',
-            page: page.page,
-            provider: 'tesseract',
+            format: 'pdf',
+            location: pageLocation(pageNumber),
+            provider: this.options.ocrProvider,
             status: 'success',
             durationMs: Date.now() - startedAt,
             cacheHit: false,
@@ -343,7 +369,20 @@ export class PdfDocumentParser implements DocumentParser {
           { tenantId: input.tenantId, documentVersionId: input.documentVersionId },
         );
       } catch (error) {
-        warnings.push(`PDF page ${page.page} OCR failed: ${errorMessage(error)}`);
+        warnings.push(`PDF page ${pageNumber} OCR failed: ${errorMessage(error)}`);
+        await this.options.onProcessingMetric?.(
+          {
+            operation: 'ocr',
+            format: 'pdf',
+            location: pageLocation(pageNumber),
+            provider: this.options.ocrProvider,
+            status: 'failed',
+            durationMs: Date.now() - startedAt,
+            cacheHit: false,
+            metadata: { error: errorMessage(error) },
+          },
+          { tenantId: input.tenantId, documentVersionId: input.documentVersionId },
+        );
       }
     }
   }
@@ -427,7 +466,7 @@ export class PdfDocumentParser implements DocumentParser {
           return [
             {
               id: `p${page.num}-t${index + 1}`,
-              page: page.num,
+              location: pageLocation(page.num),
               rows,
               markdown,
             },
@@ -442,7 +481,9 @@ export class PdfDocumentParser implements DocumentParser {
 
   private attachTables(pages: StructuredDocumentPage[], tables: StructuredDocumentTable[]): void {
     for (const table of tables) {
-      const page = pages.find((candidate) => candidate.page === table.page);
+      if (table.location.type !== 'page') continue;
+      const pageNumber = table.location.page;
+      const page = pages.find((candidate) => candidate.location.page === pageNumber);
       if (!page) continue;
       const tableTerms = new Set(
         table.rows
@@ -467,10 +508,10 @@ export class PdfDocumentParser implements DocumentParser {
       page.elements.push({
         id: table.id,
         kind: 'table',
-        page: table.page,
+        location: pageLocation(pageNumber),
         order,
         text: table.rows.map((row) => row.join(' | ')).join('\n'),
-        markdown: `### Table ${tablesForPage(tables, table.page).indexOf(table) + 1}\n\n${table.markdown}`,
+        markdown: `### Table ${tablesForPage(tables, pageNumber).indexOf(table) + 1}\n\n${table.markdown}`,
         offsetStart: 0,
         offsetEnd: 0,
         searchable: true,
@@ -486,7 +527,8 @@ export class PdfDocumentParser implements DocumentParser {
     imagesByPage: Map<number, PageImage[]>,
   ): void {
     for (const page of pages) {
-      for (const image of imagesByPage.get(page.page) ?? []) {
+      const pageNumber = page.location.page;
+      for (const image of imagesByPage.get(pageNumber) ?? []) {
         const order = Math.max(0, ...page.elements.map((element) => element.order)) + 1;
         const sectionPath =
           [...page.elements]
@@ -496,9 +538,9 @@ export class PdfDocumentParser implements DocumentParser {
         page.elements.push({
           id: image.id,
           kind: 'figure',
-          page: page.page,
+          location: pageLocation(pageNumber),
           order,
-          text: `PDF page ${page.page} image`,
+          text: `PDF page ${pageNumber} image`,
           markdown: image.markdown,
           offsetStart: 0,
           offsetEnd: 0,
@@ -520,18 +562,20 @@ export class PdfDocumentParser implements DocumentParser {
   ): Promise<void> {
     if (!this.options.visionEngine) return;
     const candidates = pages.flatMap((page) =>
-      (imagesByPage.get(page.page) ?? [])
+      (imagesByPage.get(page.location.page) ?? [])
         .filter((image) => image.width * image.height >= this.options.visionMinPixels)
         .map((image) => ({ page, image })),
     );
     for (const { page, image } of candidates.slice(0, this.options.visionMaxImages)) {
+      const pageNumber = page.location.page;
       const element = page.elements.find((candidate) => candidate.figureId === image.id);
       if (!element) continue;
+      const startedAt = Date.now();
       try {
-        const startedAt = Date.now();
         const result = await withTimeout(
           this.options.visionEngine.analyze({
-            page: page.page,
+            format: 'pdf',
+            location: pageLocation(pageNumber),
             image: image.bytes,
             mimeType: image.mimeType,
             width: image.width,
@@ -543,10 +587,10 @@ export class PdfDocumentParser implements DocumentParser {
               .slice(0, 2_000),
             tenantId: input.tenantId,
             runId: input.documentVersionId,
-            figureId: image.id,
+            assetId: image.id,
           }),
           this.options.visionTimeoutMs,
-          `PDF page ${page.page} image analysis timed out`,
+          `PDF page ${pageNumber} image analysis timed out`,
         );
         page.visionAnalyzedImages += 1;
         element.kind = result.kind === 'table' ? 'table' : 'figure';
@@ -558,9 +602,11 @@ export class PdfDocumentParser implements DocumentParser {
         await this.options.onProcessingMetric?.(
           {
             operation: 'vision',
-            page: page.page,
+            format: 'pdf',
+            location: pageLocation(pageNumber),
             assetId: image.id,
-            provider: 'openai-compatible',
+            provider: this.options.visionProvider,
+            model: this.options.visionModel,
             status: 'success',
             durationMs: Date.now() - startedAt,
             cacheHit: false,
@@ -570,7 +616,22 @@ export class PdfDocumentParser implements DocumentParser {
         );
       } catch (error) {
         warnings.push(
-          `PDF page ${page.page} image ${image.filename} analysis failed: ${errorMessage(error)}`,
+          `PDF page ${pageNumber} image ${image.filename} analysis failed: ${errorMessage(error)}`,
+        );
+        await this.options.onProcessingMetric?.(
+          {
+            operation: 'vision',
+            format: 'pdf',
+            location: pageLocation(pageNumber),
+            assetId: image.id,
+            provider: this.options.visionProvider,
+            model: this.options.visionModel,
+            status: 'failed',
+            durationMs: Date.now() - startedAt,
+            cacheHit: false,
+            metadata: { error: errorMessage(error) },
+          },
+          { tenantId: input.tenantId, documentVersionId: input.documentVersionId },
         );
       }
     }
@@ -602,9 +663,10 @@ function renderDocument(pages: StructuredDocumentPage[]): {
   };
 
   for (const page of pages) {
+    const pageNumber = page.location.page;
     if (markdown) append('\n\n');
     const pageStart = markdown.length;
-    append(`## Page ${page.page}`);
+    append(`## Page ${pageNumber}`);
     for (const element of [...page.elements].sort(
       (left, right) => left.order - right.order || left.id.localeCompare(right.id),
     )) {
@@ -615,7 +677,7 @@ function renderDocument(pages: StructuredDocumentPage[]): {
       element.offsetEnd = markdown.length;
       anchors.push({
         type: 'page',
-        page: page.page,
+        page: pageNumber,
         heading: element.sectionPath.at(-1),
         offsetStart: element.offsetStart,
         offsetEnd: element.offsetEnd,
@@ -631,7 +693,7 @@ function renderDocument(pages: StructuredDocumentPage[]): {
     }
     anchors.push({
       type: 'page',
-      page: page.page,
+      page: pageNumber,
       offsetStart: pageStart,
       offsetEnd: markdown.length,
     });
@@ -640,7 +702,7 @@ function renderDocument(pages: StructuredDocumentPage[]): {
 }
 
 function tablesForPage(tables: StructuredDocumentTable[], page: number): StructuredDocumentTable[] {
-  return tables.filter((table) => table.page === page);
+  return tables.filter((table) => table.location.type === 'page' && table.location.page === page);
 }
 
 function normalizedTerms(value: string): string[] {
@@ -704,10 +766,12 @@ function buildQualityReport(
     status: score >= minimumScore && reasons.length === 0 ? 'pass' : 'review',
     score,
     reasons,
-    scannedPages: scannedPages.length,
-    unprocessedScannedPages,
-    lowConfidenceOcrPages,
-    emptySearchablePages,
-    unanalyzedVisuals,
+    metrics: {
+      scannedPages: scannedPages.length,
+      unprocessedScannedPages,
+      lowConfidenceOcrPages,
+      emptySearchablePages,
+      unanalyzedVisuals,
+    },
   };
 }

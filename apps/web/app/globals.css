@@ -785,6 +785,23 @@ h2 {
   font-weight: 700;
 }
 
+.markdown-preview .citation-location-content {
+  max-height: 240px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.citation-location-placeholder {
+  min-height: 96px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .citation-page-canvas {
   position: relative;
   width: min(100%, 900px);

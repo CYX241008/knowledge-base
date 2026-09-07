@@ -1,7 +1,11 @@
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import type { BoundingBox, StructuredDocumentElement } from '../structured-document';
+import {
+  pageLocation,
+  type BoundingBox,
+  type StructuredDocumentElement,
+} from '../structured-document';
 
 const moduleRequire = createRequire(__filename);
 const STANDARD_FONT_DATA_URL = `${resolve(
@@ -164,7 +168,7 @@ export function createNativePageElements(
     elements.push({
       id: `p${page.page}-e${order}`,
       kind,
-      page: page.page,
+      location: pageLocation(page.page),
       order,
       text: text.trim(),
       markdown: markdown.trim(),

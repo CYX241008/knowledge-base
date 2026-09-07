@@ -1,12 +1,15 @@
 import type { DocumentParser, ParsedDocument, ParseInput } from '../index';
-import { DocxDocumentParser } from './docx';
+import { DocxDocumentParser, type DocxParserOptions } from './docx';
 import { PdfDocumentParser, type PdfParserOptions } from './pdf';
 import { PlainTextDocumentParser, extensionOf } from './plain-text';
-import { PptxDocumentParser } from './pptx';
-import { XlsxDocumentParser } from './xlsx';
+import { PptxDocumentParser, type PptxParserOptions } from './pptx';
+import { XlsxDocumentParser, type XlsxParserOptions } from './xlsx';
 
 export type DocumentParserRegistryOptions = {
+  docx?: DocxParserOptions;
   pdf?: PdfParserOptions;
+  pptx?: PptxParserOptions;
+  xlsx?: XlsxParserOptions;
   parsers?: DocumentParser[];
 };
 
@@ -16,10 +19,10 @@ export class DocumentParserRegistry {
   constructor(options: DocumentParserRegistryOptions = {}) {
     this.parsers = options.parsers ?? [
       new PlainTextDocumentParser(),
-      new DocxDocumentParser(),
+      new DocxDocumentParser(options.docx),
       new PdfDocumentParser(options.pdf),
-      new XlsxDocumentParser(),
-      new PptxDocumentParser(),
+      new XlsxDocumentParser(options.xlsx),
+      new PptxDocumentParser(options.pptx),
     ];
   }
 

@@ -91,19 +91,58 @@ type AnswerCitation = {
   title: string;
   excerpt: string;
   source: {
+    type: 'document' | 'heading' | 'page' | 'slide' | 'sheet';
     page: number | null;
     slide: number | null;
     sheet: string | null;
+    rowStart?: number | null;
+    rowEnd?: number | null;
+    range?: string | null;
     heading: string | null;
     offsetStart: number;
     offsetEnd: number;
     elementType?: string | null;
+    elementIds?: string[];
     sectionPath?: string[];
     tableId?: string | null;
     figureId?: string | null;
     boundingBoxes?: Array<{ x: number; y: number; width: number; height: number }>;
     confidence?: number | null;
   };
+};
+
+type StructuredPreviewLocation =
+  | { type: 'document' }
+  | { type: 'section'; heading?: string }
+  | { type: 'page'; page: number }
+  | { type: 'slide'; slide: number }
+  | {
+      type: 'sheet';
+      sheet: string;
+      rowStart?: number;
+      rowEnd?: number;
+      range?: string;
+    };
+
+type StructuredPreviewElement = {
+  id: string;
+  location: StructuredPreviewLocation;
+  markdown: string;
+  text: string;
+  searchable: boolean;
+  sectionPath: string[];
+};
+
+type StructuredDocumentPreview = {
+  units: Array<{
+    location: StructuredPreviewLocation;
+    elements: StructuredPreviewElement[];
+  }>;
+};
+
+type CitationLocationPreview = {
+  label: string;
+  content: string;
 };
 
 type AnswerResponse = {
@@ -193,6 +232,8 @@ export function DocumentWorkspace(): ReactElement {
   const [citationFocus, setCitationFocus] = useState<AnswerCitation | null>(null);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [loadingPdfPreview, setLoadingPdfPreview] = useState(false);
+  const [locationPreview, setLocationPreview] = useState<CitationLocationPreview | null>(null);
+  const [loadingLocationPreview, setLoadingLocationPreview] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [loadingDocuments, setLoadingDocuments] = useState(true);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -242,6 +283,7 @@ export function DocumentWorkspace(): ReactElement {
       if (!preserveCitation) {
         setCitationFocus(null);
         replacePdfPreviewUrl(null);
+        setLocationPreview(null);
       }
       try {
         const detail = await requestApi<{
@@ -675,6 +717,9 @@ export function DocumentWorkspace(): ReactElement {
 
   function newConversation(): void {
     cancelAnswer();
+    setCitationFocus(null);
+    replacePdfPreviewUrl(null);
+    setLocationPreview(null);
     setConversationId(null);
     setActiveQuestion(null);
     setAnswer('');
@@ -745,6 +790,8 @@ export function DocumentWorkspace(): ReactElement {
   async function openCitation(citation: AnswerCitation): Promise<void> {
     setCitationFocus(citation);
     replacePdfPreviewUrl(null);
+    setLocationPreview(null);
+    setLoadingLocationPreview(false);
     const version = await loadDocument(citation.documentId, citation.documentVersionId, true);
     let previewLoaded = false;
     if (version?.mimeType === 'application/pdf' && citation.source.page) {
@@ -760,6 +807,22 @@ export function DocumentWorkspace(): ReactElement {
         setPageError(errorMessage(error));
       } finally {
         setLoadingPdfPreview(false);
+      }
+    } else {
+      setLoadingLocationPreview(true);
+      try {
+        const structure = await requestApi<StructuredDocumentPreview>(
+          `${apiBase}/documents/${citation.documentId}/versions/${citation.documentVersionId}/structure`,
+        );
+        const content = citationLocationContent(structure, citation);
+        if (content) {
+          setLocationPreview({ label: citationSource(citation), content });
+          previewLoaded = true;
+        }
+      } catch (error) {
+        setPageError(errorMessage(error));
+      } finally {
+        setLoadingLocationPreview(false);
       }
     }
     window.requestAnimationFrame(() => {
@@ -1169,6 +1232,20 @@ export function DocumentWorkspace(): ReactElement {
                   ) : null}
                 </div>
               ) : null}
+              {citationFocus &&
+              !citationFocus.source.page &&
+              (locationPreview || loadingLocationPreview) ? (
+                <div className="citation-page">
+                  <div className="citation-page-heading">
+                    {locationPreview?.label ?? citationSource(citationFocus)}
+                  </div>
+                  {loadingLocationPreview ? (
+                    <span className="citation-location-placeholder">正在读取引用位置</span>
+                  ) : locationPreview ? (
+                    <pre className="citation-location-content">{locationPreview.content}</pre>
+                  ) : null}
+                </div>
+              ) : null}
               <HighlightedMarkdown citation={citationFocus} markdown={markdown} />
             </>
           ) : (
@@ -1342,11 +1419,106 @@ function answerRunMessage(run: ConversationAnswerRun | null): string | null {
   return null;
 }
 
+function citationLocationContent(
+  structure: StructuredDocumentPreview,
+  citation: AnswerCitation,
+): string {
+  const elementIds = new Set(citation.source.elementIds ?? []);
+  const allElements = structure.units.flatMap((unit) => unit.elements);
+  const selectedById =
+    elementIds.size > 0 ? allElements.filter((element) => elementIds.has(element.id)) : [];
+  const selected =
+    selectedById.length > 0
+      ? selectedById
+      : structure.units
+          .filter((unit) => citationUnitMatches(unit.location, citation))
+          .flatMap((unit) => unit.elements);
+  return [
+    ...new Set(
+      selected
+        .filter((element) => element.searchable)
+        .map((element) => element.markdown.trim())
+        .filter(Boolean),
+    ),
+  ].join('\n\n');
+}
+
+function citationUnitMatches(
+  location: StructuredPreviewLocation,
+  citation: AnswerCitation,
+): boolean {
+  const source = citation.source;
+  switch (source.type) {
+    case 'page':
+      return location.type === 'page' && location.page === source.page;
+    case 'slide':
+      return location.type === 'slide' && location.slide === source.slide;
+    case 'sheet':
+      return (
+        location.type === 'sheet' &&
+        location.sheet === source.sheet &&
+        (!source.range || !location.range || previewRangesOverlap(location.range, source.range))
+      );
+    case 'heading': {
+      const heading = normalizePreviewText(source.heading ?? source.sectionPath?.at(-1) ?? '');
+      if (!heading) return false;
+      return (
+        (location.type === 'section' &&
+          normalizePreviewText(location.heading ?? '').includes(heading)) ||
+        (location.type === 'document' &&
+          citation.source.sectionPath?.some((section) =>
+            normalizePreviewText(section).includes(heading),
+          ) === true)
+      );
+    }
+    case 'document':
+      return true;
+  }
+}
+
+function previewRangesOverlap(left: string, right: string): boolean {
+  const leftRange = parsePreviewRange(left);
+  const rightRange = parsePreviewRange(right);
+  if (!leftRange || !rightRange) return left.toUpperCase() === right.toUpperCase();
+  return !(
+    leftRange.rowEnd < rightRange.rowStart ||
+    rightRange.rowEnd < leftRange.rowStart ||
+    leftRange.columnEnd < rightRange.columnStart ||
+    rightRange.columnEnd < leftRange.columnStart
+  );
+}
+
+function parsePreviewRange(
+  value: string,
+): { rowStart: number; rowEnd: number; columnStart: number; columnEnd: number } | undefined {
+  const match = value.replaceAll('$', '').match(/^([A-Z]{1,3})(\d+)(?::([A-Z]{1,3})(\d+))?$/iu);
+  if (!match) return undefined;
+  return {
+    columnStart: previewColumnNumber(match[1] ?? ''),
+    rowStart: Number(match[2]),
+    columnEnd: previewColumnNumber(match[3] ?? match[1] ?? ''),
+    rowEnd: Number(match[4] ?? match[2]),
+  };
+}
+
+function previewColumnNumber(value: string): number {
+  return [...value.toUpperCase()].reduce(
+    (result, character) => result * 26 + character.charCodeAt(0) - 64,
+    0,
+  );
+}
+
+function normalizePreviewText(value: string): string {
+  return value.toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
+}
+
 function citationSource(citation: AnswerCitation): string {
   const section = citation.source.sectionPath?.at(-1) ?? citation.source.heading;
   if (citation.source.page) return `第 ${citation.source.page} 页${section ? ` · ${section}` : ''}`;
   if (citation.source.slide) return `第 ${citation.source.slide} 张幻灯片`;
-  if (citation.source.sheet) return `工作表 ${citation.source.sheet}`;
+  if (citation.source.sheet) {
+    return `工作表 ${citation.source.sheet}${citation.source.range ? ` · ${citation.source.range}` : ''}`;
+  }
   return citation.source.heading ?? '文档正文';
 }
 

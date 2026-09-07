@@ -1,4 +1,8 @@
-import type { PdfPageClassification, StructuredDocument } from './structured-document';
+import {
+  getStructuredPage,
+  type PdfPageClassification,
+  type StructuredDocument,
+} from './structured-document';
 
 export type PdfEvaluationCase = {
   page: number;
@@ -34,7 +38,7 @@ export function evaluatePdfStructure(
   let searchableElements = 0;
   let locatableElements = 0;
   for (const evaluationCase of cases) {
-    const page = structure.pages.find((item) => item.page === evaluationCase.page);
+    const page = getStructuredPage(structure, evaluationCase.page);
     if (!page) continue;
     if (evaluationCase.classification) {
       classifications += 1;
@@ -47,7 +51,9 @@ export function evaluatePdfStructure(
     }
     const tableText = normalize(
       structure.tables
-        .filter((table) => table.page === evaluationCase.page)
+        .filter(
+          (table) => table.location.type === 'page' && table.location.page === evaluationCase.page,
+        )
         .flatMap((table) => table.rows.flat())
         .join(' '),
     );

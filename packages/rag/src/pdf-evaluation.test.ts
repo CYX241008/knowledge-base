@@ -5,22 +5,32 @@ import type { StructuredDocument } from './structured-document';
 describe('evaluatePdfStructure', () => {
   it('scores classification, text, tables, visuals, and coordinates', () => {
     const structure = {
-      version: 1,
+      version: 2,
       format: 'pdf',
       quality: {
         status: 'pass',
         score: 100,
         reasons: [],
-        scannedPages: 0,
-        unprocessedScannedPages: 0,
-        lowConfidenceOcrPages: 0,
-        emptySearchablePages: 0,
-        unanalyzedVisuals: 0,
+        metrics: {
+          scannedPages: 0,
+          unprocessedScannedPages: 0,
+          lowConfidenceOcrPages: 0,
+          emptySearchablePages: 0,
+          unanalyzedVisuals: 0,
+        },
       },
-      tables: [{ id: 'p1-t1', page: 1, rows: [['Revenue', '100']], markdown: '' }],
-      pages: [
+      tables: [
         {
-          page: 1,
+          id: 'p1-t1',
+          location: { type: 'page', page: 1 },
+          rows: [['Revenue', '100']],
+          markdown: '',
+        },
+      ],
+      units: [
+        {
+          id: 'page-1',
+          location: { type: 'page', page: 1 },
           width: 100,
           height: 100,
           classification: 'mixed',
@@ -33,7 +43,7 @@ describe('evaluatePdfStructure', () => {
             {
               id: 'p1-e1',
               kind: 'paragraph',
-              page: 1,
+              location: { type: 'page', page: 1 },
               order: 1,
               text: 'Quarterly revenue',
               markdown: 'Quarterly revenue',
@@ -47,7 +57,7 @@ describe('evaluatePdfStructure', () => {
             {
               id: 'p1-f1',
               kind: 'figure',
-              page: 1,
+              location: { type: 'page', page: 1 },
               order: 2,
               text: 'Revenue increased',
               markdown: 'Revenue increased',

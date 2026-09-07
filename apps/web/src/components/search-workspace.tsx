@@ -909,10 +909,11 @@ function sourceLabel(hit: SearchDocumentHit): string {
   if (source.type === 'page' && source.page) return `第 ${source.page} 页`;
   if (source.type === 'slide' && source.slide) return `第 ${source.slide} 张幻灯片`;
   if (source.type === 'sheet' && source.sheet) {
+    const range = source.range ? ` · ${source.range}` : '';
     const rows = source.rowStart
       ? ` · 第 ${source.rowStart}${source.rowEnd && source.rowEnd !== source.rowStart ? `-${source.rowEnd}` : ''} 行`
       : '';
-    return `${source.sheet}${rows}`;
+    return `${source.sheet}${range}${rows}`;
   }
   if (source.heading) return source.heading;
   return '文档正文';

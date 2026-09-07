@@ -1,22 +1,31 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
-import type { BoundingBox, PdfOcrEngine, PdfOcrInput, PdfOcrResult } from '@knowledge-base/rag';
+import type {
+  BoundingBox,
+  DocumentLocation,
+  OcrEngine,
+  OcrInput,
+  OcrResult,
+} from '@knowledge-base/rag';
 import { mkdir } from 'node:fs/promises';
 import { createWorker, OEM, type Worker } from 'tesseract.js';
 
 @Injectable()
-export class TesseractPdfOcrService implements PdfOcrEngine, OnModuleDestroy {
+export class TesseractOcrService implements OcrEngine, OnModuleDestroy {
   private workerPromise: Promise<Worker> | null = null;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(@Inject(ConfigService) private readonly config: ConfigService<ServerEnv, true>) {}
 
   get enabled(): boolean {
-    return this.config.getOrThrow('PDF_OCR_PROVIDER') === 'tesseract';
+    return (
+      (this.config.get('DOCUMENT_OCR_PROVIDER') ?? this.config.getOrThrow('PDF_OCR_PROVIDER')) ===
+      'tesseract'
+    );
   }
 
-  recognize(input: PdfOcrInput): Promise<PdfOcrResult> {
+  recognize(input: OcrInput): Promise<OcrResult> {
     const task = this.queue.then(() => this.runRecognition(input));
     this.queue = task.then(
       () => undefined,
@@ -32,14 +41,14 @@ export class TesseractPdfOcrService implements PdfOcrEngine, OnModuleDestroy {
     if (worker) await worker.terminate();
   }
 
-  private async runRecognition(input: PdfOcrInput): Promise<PdfOcrResult> {
-    if (!this.enabled) throw new Error('Tesseract PDF OCR is disabled');
+  private async runRecognition(input: OcrInput): Promise<OcrResult> {
+    if (!this.enabled) throw new Error('Tesseract document OCR is disabled');
     const worker = await this.worker();
     const result = await worker.recognize(
       Buffer.from(input.image),
       {},
       { text: true, blocks: true },
-      `pdf-page-${input.page}`,
+      `${input.format}-${locationKey(input.location)}`,
     );
     return {
       text: result.data.text.trim(),
@@ -57,13 +66,16 @@ export class TesseractPdfOcrService implements PdfOcrEngine, OnModuleDestroy {
 
   private async worker(): Promise<Worker> {
     if (!this.workerPromise) {
-      const languages = this.config
-        .getOrThrow('PDF_OCR_LANGUAGES')
+      const languageValue =
+        this.config.get('DOCUMENT_OCR_LANGUAGES') ?? this.config.getOrThrow('PDF_OCR_LANGUAGES');
+      const languages = languageValue
         .split(/[,+]/u)
         .map((language: string) => language.trim())
         .filter(Boolean);
-      const langPath = this.config.get('PDF_OCR_LANG_PATH');
-      const cachePath = this.config.getOrThrow('PDF_OCR_CACHE_PATH');
+      const langPath =
+        this.config.get('DOCUMENT_OCR_LANG_PATH') ?? this.config.get('PDF_OCR_LANG_PATH');
+      const cachePath =
+        this.config.get('DOCUMENT_OCR_CACHE_PATH') ?? this.config.getOrThrow('PDF_OCR_CACHE_PATH');
       await mkdir(cachePath, { recursive: true });
       this.workerPromise = createWorker(languages, OEM.LSTM_ONLY, {
         cachePath,
@@ -74,6 +86,21 @@ export class TesseractPdfOcrService implements PdfOcrEngine, OnModuleDestroy {
       });
     }
     return this.workerPromise;
+  }
+}
+
+function locationKey(location: DocumentLocation): string {
+  switch (location.type) {
+    case 'page':
+      return `page-${location.page}`;
+    case 'slide':
+      return `slide-${location.slide}`;
+    case 'sheet':
+      return `sheet-${location.sheet}-${location.rowStart ?? 1}-${location.rowEnd ?? 'end'}`;
+    case 'section':
+      return `section-${location.heading ?? 'document'}`;
+    case 'document':
+      return 'document';
   }
 }
 

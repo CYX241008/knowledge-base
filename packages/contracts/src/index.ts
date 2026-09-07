@@ -344,11 +344,22 @@ export const SearchSourceSchema = z.object({
   sheet: z.string().nullable(),
   rowStart: z.number().int().positive().nullable(),
   rowEnd: z.number().int().positive().nullable(),
+  range: z.string().nullable().optional(),
   heading: z.string().nullable(),
   offsetStart: z.number().int().nonnegative(),
   offsetEnd: z.number().int().nonnegative(),
   elementType: z
-    .enum(['heading', 'paragraph', 'table', 'figure', 'caption', 'header', 'footer'])
+    .enum([
+      'heading',
+      'paragraph',
+      'list',
+      'code',
+      'table',
+      'figure',
+      'caption',
+      'header',
+      'footer',
+    ])
     .nullable()
     .optional(),
   elementIds: z.array(z.string()).optional(),
@@ -732,7 +743,9 @@ export type AnswerCitation = z.infer<typeof AnswerCitationSchema>;
 
 export const answerToolNames = [
   'search_document',
+  'read_location',
   'read_page',
+  'read_range',
   'get_table',
   'inspect_figure',
   'get_source',
@@ -746,7 +759,12 @@ export const AnswerToolCallSchema = z.object({
   durationMs: z.number().int().nonnegative(),
   documentId: z.string().uuid().nullable(),
   documentVersionId: z.string().uuid().nullable(),
+  locationType: z.enum(['document', 'section', 'page', 'slide', 'sheet']).nullable().optional(),
   page: z.number().int().positive().nullable(),
+  slide: z.number().int().positive().nullable().optional(),
+  sheet: z.string().nullable().optional(),
+  range: z.string().nullable().optional(),
+  heading: z.string().nullable().optional(),
   resourceId: z.string().nullable(),
   resultCount: z.number().int().nonnegative(),
 });

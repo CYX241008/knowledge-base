@@ -7,11 +7,13 @@ import {
   DocumentSearchProjectionJobSchema,
   DocumentReviewQuerySchema,
   ConversationDetailResponseSchema,
+  AnswerToolCallSchema,
   RejectDocumentReviewRequestSchema,
   MoveDocumentRequestSchema,
   ReplaceDocumentAclRequestSchema,
   SearchDocumentsRequestSchema,
   SearchDocumentsResponseSchema,
+  SearchSourceSchema,
   SubmitSearchFeedbackRequestSchema,
   UpdateSystemSettingsRequestSchema,
   documentAclProjectionQueueJobId,
@@ -229,6 +231,54 @@ describe('reliable queue contracts', () => {
     expect(
       SearchDocumentsResponseSchema.safeParse({ ...response, queryEventId: undefined }).success,
     ).toBe(false);
+  });
+
+  it('preserves spreadsheet ranges in search sources and answer tools', () => {
+    expect(
+      SearchSourceSchema.parse({
+        type: 'sheet',
+        page: null,
+        slide: null,
+        sheet: 'Summary',
+        rowStart: 1,
+        rowEnd: 3,
+        range: 'A1:B3',
+        heading: null,
+        offsetStart: 0,
+        offsetEnd: 20,
+      }),
+    ).toMatchObject({ sheet: 'Summary', range: 'A1:B3' });
+    expect(
+      AnswerToolCallSchema.parse({
+        name: 'read_range',
+        status: 'success',
+        durationMs: 1,
+        documentId: '11111111-1111-4111-8111-111111111111',
+        documentVersionId: '22222222-2222-4222-8222-222222222222',
+        page: null,
+        sheet: 'Summary',
+        range: 'A1:B3',
+        resourceId: 'A1:B3',
+        resultCount: 1,
+      }),
+    ).toMatchObject({ name: 'read_range', range: 'A1:B3' });
+    expect(
+      AnswerToolCallSchema.parse({
+        name: 'read_location',
+        status: 'success',
+        durationMs: 1,
+        documentId: '11111111-1111-4111-8111-111111111111',
+        documentVersionId: '22222222-2222-4222-8222-222222222222',
+        locationType: 'section',
+        page: null,
+        slide: null,
+        sheet: null,
+        range: null,
+        heading: 'Deployment',
+        resourceId: 'section-Deployment',
+        resultCount: 2,
+      }),
+    ).toMatchObject({ name: 'read_location', locationType: 'section' });
   });
 
   it('exposes answer run state with conversation messages', () => {

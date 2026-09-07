@@ -85,6 +85,14 @@ const ServerEnvSchema = z
     EMBEDDING_BATCH_MAX_INPUTS: z.coerce.number().int().min(1).max(2_048).default(64),
     EMBEDDING_BATCH_MAX_TOKENS: z.coerce.number().int().min(1_000).default(50_000),
     DOCUMENT_MAX_CHUNKS: z.coerce.number().int().min(1).default(10_000),
+    DOCUMENT_OCR_PROVIDER: z.enum(['disabled', 'tesseract']).optional(),
+    DOCUMENT_OCR_LANGUAGES: z.string().trim().min(1).optional(),
+    DOCUMENT_OCR_LANG_PATH: z.string().trim().min(1).optional(),
+    DOCUMENT_OCR_CACHE_PATH: z.string().trim().min(1).optional(),
+    DOCUMENT_OCR_MAX_IMAGES: z.coerce.number().int().min(0).max(500).optional(),
+    DOCUMENT_OCR_MIN_PIXELS: z.coerce.number().int().min(1).optional(),
+    DOCUMENT_OCR_TIMEOUT_MS: z.coerce.number().int().min(10_000).optional(),
+    DOCUMENT_OCR_MIN_CONFIDENCE: z.coerce.number().min(0).max(100).optional(),
     PDF_OCR_PROVIDER: z.enum(['disabled', 'tesseract']).default('disabled'),
     PDF_OCR_LANGUAGES: z.string().trim().min(1).default('eng,chi_sim'),
     PDF_OCR_LANG_PATH: z.string().trim().min(1).optional(),
@@ -95,6 +103,13 @@ const ServerEnvSchema = z
     PDF_OCR_MIN_CONFIDENCE: z.coerce.number().min(0).max(100).default(40),
     PDF_NATIVE_TEXT_MIN_CHARACTERS: z.coerce.number().int().min(1).default(40),
     PDF_HEADER_FOOTER_MIN_PAGE_RATIO: z.coerce.number().min(0.5).max(1).default(0.6),
+    DOCUMENT_VISION_PROVIDER: z.enum(['disabled', 'openai-compatible']).optional(),
+    DOCUMENT_VISION_MODEL: z.string().trim().min(1).optional(),
+    DOCUMENT_VISION_MAX_IMAGES: z.coerce.number().int().min(0).max(500).optional(),
+    DOCUMENT_VISION_MIN_PIXELS: z.coerce.number().int().min(1).optional(),
+    DOCUMENT_VISION_TIMEOUT_MS: z.coerce.number().int().min(1_000).optional(),
+    DOCUMENT_VISION_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(4_096).optional(),
+    DOCUMENT_VISION_DETAIL: z.enum(['low', 'high', 'auto']).optional(),
     PDF_VISION_PROVIDER: z.enum(['disabled', 'openai-compatible']).default('disabled'),
     PDF_VISION_MODEL: z.string().trim().min(1).default('gpt-4.1-mini'),
     PDF_VISION_MAX_IMAGES: z.coerce.number().int().min(0).max(500).default(50),
@@ -207,6 +222,7 @@ const ServerEnvSchema = z
     }
     if (
       env.MODEL_PROVIDER === 'openai-compatible' ||
+      env.DOCUMENT_VISION_PROVIDER === 'openai-compatible' ||
       env.PDF_VISION_PROVIDER === 'openai-compatible'
     ) {
       for (const key of ['MODEL_BASE_URL', 'MODEL_API_KEY'] as const) {

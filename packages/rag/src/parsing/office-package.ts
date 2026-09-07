@@ -58,3 +58,19 @@ export async function readZipText(
   }
   return new TextDecoder().decode(bytes);
 }
+
+export async function readZipBytes(
+  file: JSZip.JSZipObject,
+  format: string,
+  maximumBytes: number,
+): Promise<Uint8Array> {
+  const bytes = await withTimeout(
+    file.async('uint8array'),
+    PACKAGE_TIMEOUT_MS,
+    `${format} package entry extraction timed out after 60 seconds`,
+  );
+  if (bytes.byteLength > maximumBytes) {
+    throw new ParserLimitError(`${format} package entry exceeds ${maximumBytes} bytes`);
+  }
+  return bytes;
+}

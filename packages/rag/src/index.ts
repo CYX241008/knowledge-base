@@ -5,6 +5,7 @@ export type SourceAnchor = {
   sheet?: string;
   rowStart?: number;
   rowEnd?: number;
+  range?: string;
   heading?: string;
   offsetStart: number;
   offsetEnd: number;
@@ -87,10 +88,12 @@ export { CHUNKER_VERSION, chunkMarkdown } from './chunking/markdown';
 export type { ChunkMarkdownOptions, MarkdownChunk } from './chunking/markdown';
 export { assetReference, toMarkdownTable } from './parsing/parser-utils';
 export { DocxDocumentParser } from './parsing/docx';
+export type { DocxParserOptions } from './parsing/docx';
 export { DocumentParserRegistry } from './parsing/document-parser-registry';
 export { PdfDocumentParser } from './parsing/pdf';
 export { renderPdfPagePng } from './parsing/pdf-preview';
 export { PptxDocumentParser } from './parsing/pptx';
+export type { PptxParserOptions } from './parsing/pptx';
 export {
   PlainTextDocumentParser,
   cleanMarkdown,
@@ -98,6 +101,7 @@ export {
   headingAnchors,
 } from './parsing/plain-text';
 export { XlsxDocumentParser } from './parsing/xlsx';
+export type { XlsxParserOptions } from './parsing/xlsx';
 export { DEFAULT_DOCUMENT_CHUNK_INDEX, ElasticsearchChunkIndex } from './retrieval/elasticsearch';
 export type { KeywordIndexedChunk, KeywordSearchHit } from './retrieval/elasticsearch';
 export { maximalMarginalRelevance, parseVectorLiteral } from './retrieval/mmr';
@@ -105,6 +109,15 @@ export type { MmrCandidate, MmrOptions } from './retrieval/mmr';
 export { evaluateRag } from './evaluation';
 export { evaluatePdfStructure } from './pdf-evaluation';
 export type { PdfEvaluationCase, PdfEvaluationReport } from './pdf-evaluation';
+export {
+  getStructuredPage,
+  isStructuredDocument,
+  pageLocation,
+  parseStructuredDocument,
+  sameDocumentLocation,
+  structuredDocumentPages,
+  upgradeStructuredDocumentV1,
+} from './structured-document';
 export type {
   RagEvaluationCase,
   RagEvaluationCaseResult,
@@ -118,8 +131,18 @@ export type {
 } from './evaluation';
 export type {
   BoundingBox,
+  DocumentFormat,
+  DocumentLocation,
+  DocumentProcessingMetric,
+  DocumentProcessingObserver,
+  DocumentQualityMetric,
   DocumentQualityReport,
   DocumentQualityStatus,
+  OcrBlock,
+  OcrEngine,
+  OcrInput,
+  OcrResult,
+  PersistedStructuredDocument,
   PdfOcrBlock,
   PdfOcrEngine,
   PdfOcrInput,
@@ -135,6 +158,15 @@ export type {
   StructuredDocumentElement,
   StructuredDocumentPage,
   StructuredDocumentTable,
+  StructuredDocumentUnit,
+  StructuredDocumentV1,
+  StructuredDocumentV1Element,
+  StructuredDocumentV1Page,
+  StructuredDocumentV1Table,
   StructuredElementKind,
   StructuredElementSource,
+  VisionEngine,
+  VisionInput,
+  VisionKind,
+  VisionResult,
 } from './structured-document';

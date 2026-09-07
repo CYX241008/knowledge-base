@@ -3,16 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
 import { createVisionGateway, type ModelGateway } from '@knowledge-base/model-gateway';
 import type {
-  PdfVisionEngine,
-  PdfVisionInput,
-  PdfVisionKind,
-  PdfVisionResult,
+  DocumentLocation,
+  VisionEngine,
+  VisionInput,
+  VisionKind,
+  VisionResult,
 } from '@knowledge-base/rag';
 import { ModelMetricsService } from './model-metrics.service';
 import { ModelQuotaService } from './model-quota.service';
 
 @Injectable()
-export class PdfVisionService implements PdfVisionEngine {
+export class DocumentVisionService implements VisionEngine {
   private readonly gateway: Pick<ModelGateway, 'analyzeImage'> | null;
 
   constructor(
@@ -22,12 +23,15 @@ export class PdfVisionService implements PdfVisionEngine {
   ) {
     this.gateway = createVisionGateway({
       provider:
-        this.config.getOrThrow('PDF_VISION_PROVIDER') === 'openai-compatible'
+        (this.config.get('DOCUMENT_VISION_PROVIDER') ??
+          this.config.getOrThrow('PDF_VISION_PROVIDER')) === 'openai-compatible'
           ? 'openai-compatible'
           : 'local',
       baseUrl: this.config.get('MODEL_BASE_URL'),
       apiKey: this.config.get('MODEL_API_KEY'),
-      timeoutMs: this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
+      timeoutMs:
+        this.config.get('DOCUMENT_VISION_TIMEOUT_MS') ??
+        this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
       maxConcurrency: this.config.getOrThrow('MODEL_BATCH_MAX_CONCURRENCY'),
       maxQueueSize: this.config.getOrThrow('MODEL_BATCH_MAX_QUEUE_SIZE'),
       requestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
@@ -64,17 +68,18 @@ export class PdfVisionService implements PdfVisionEngine {
     return this.gateway !== null;
   }
 
-  async analyze(input: PdfVisionInput): Promise<PdfVisionResult> {
-    if (!this.gateway) throw new Error('PDF vision analysis is disabled');
+  async analyze(input: VisionInput): Promise<VisionResult> {
+    if (!this.gateway) throw new Error('Document vision analysis is disabled');
     const response = await this.gateway.analyzeImage({
-      model: this.config.getOrThrow('PDF_VISION_MODEL'),
+      model: this.config.get('DOCUMENT_VISION_MODEL') ?? this.config.getOrThrow('PDF_VISION_MODEL'),
       prompt: [
-        'Analyze this image extracted from a business PDF.',
+        `Analyze this image extracted from a ${input.format.toUpperCase()} business document.`,
         'Return JSON only with keys: kind, description, searchable, confidence.',
         'kind must be chart, diagram, table, document, photo, decorative, or other.',
         'description must state the visible facts, labels, values, relationships, and trend without speculation.',
         'Set searchable=false for logos, separators, backgrounds, signatures, or decorative images.',
-        input.nearbyText ? `Nearby page text:\n${input.nearbyText}` : '',
+        `Source location: ${locationLabel(input.location)}`,
+        input.nearbyText ? `Nearby document text:\n${input.nearbyText}` : '',
       ]
         .filter(Boolean)
         .join('\n\n'),
@@ -83,15 +88,18 @@ export class PdfVisionService implements PdfVisionEngine {
         mimeType: supportedMimeType(input.mimeType),
         width: input.width,
         height: input.height,
-        detail: this.config.getOrThrow('PDF_VISION_DETAIL'),
+        detail:
+          this.config.get('DOCUMENT_VISION_DETAIL') ?? this.config.getOrThrow('PDF_VISION_DETAIL'),
       },
-      maxOutputTokens: this.config.getOrThrow('PDF_VISION_MAX_OUTPUT_TOKENS'),
+      maxOutputTokens:
+        this.config.get('DOCUMENT_VISION_MAX_OUTPUT_TOKENS') ??
+        this.config.getOrThrow('PDF_VISION_MAX_OUTPUT_TOKENS'),
       context: {
         tenantId: input.tenantId,
         runId: input.runId,
         documentVersionId: input.runId,
-        pageNo: input.page,
-        assetId: input.figureId,
+        pageNo: input.location.type === 'page' ? input.location.page : undefined,
+        assetId: input.assetId,
         toolName: 'inspect_figure',
         source: 'ingestion',
       },
@@ -100,7 +108,7 @@ export class PdfVisionService implements PdfVisionEngine {
   }
 }
 
-function parseVisionResult(value: string): PdfVisionResult {
+function parseVisionResult(value: string): VisionResult {
   const json = value.match(/\{[\s\S]*\}/u)?.[0];
   if (json) {
     try {
@@ -127,12 +135,27 @@ function parseVisionResult(value: string): PdfVisionResult {
   };
 }
 
-function visionKind(value: unknown): PdfVisionKind {
+function visionKind(value: unknown): VisionKind {
   return ['chart', 'diagram', 'table', 'document', 'photo', 'decorative', 'other'].includes(
     String(value),
   )
-    ? (value as PdfVisionKind)
+    ? (value as VisionKind)
     : 'other';
+}
+
+function locationLabel(location: DocumentLocation): string {
+  switch (location.type) {
+    case 'page':
+      return `page ${location.page}`;
+    case 'slide':
+      return `slide ${location.slide}`;
+    case 'sheet':
+      return `sheet ${location.sheet}${location.range ? ` range ${location.range}` : ''}`;
+    case 'section':
+      return `section ${location.heading ?? 'untitled'}`;
+    case 'document':
+      return 'document';
+  }
 }
 
 function supportedMimeType(value: string): 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' {

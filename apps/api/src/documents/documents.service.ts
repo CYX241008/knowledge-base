@@ -23,7 +23,15 @@ import {
 } from '@knowledge-base/database';
 import { assertIngestionTransition, canTransitionIngestionStatus } from '@knowledge-base/domain';
 import { ObjectStorage } from '@knowledge-base/object-storage';
-import { renderPdfPagePng, type StructuredDocument } from '@knowledge-base/rag';
+import {
+  getStructuredPage as findStructuredPage,
+  parseStructuredDocument,
+  renderPdfPagePng,
+  type StructuredDocument,
+  type StructuredDocumentElement,
+  type StructuredDocumentPage,
+  type StructuredDocumentTable,
+} from '@knowledge-base/rag';
 import { DataSource, IsNull, Repository } from 'typeorm';
 import { IngestionService } from '../ingestion/ingestion.service';
 import { OBJECT_STORAGE } from '../storage/storage.constants';
@@ -513,8 +521,8 @@ export class DocumentsService {
     if (version.structureSha256 && checksum !== version.structureSha256.trim()) {
       throw new Error(`Structured data checksum mismatch for version ${versionId}`);
     }
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (!isStructuredDocument(parsed)) {
+    const parsed = parseStructuredDocument(new TextDecoder().decode(bytes));
+    if (!parsed) {
       throw new Error(`Structured data for version ${versionId} is invalid`);
     }
     return parsed;
@@ -548,9 +556,9 @@ export class DocumentsService {
     documentId: string,
     versionId: string,
     page: number,
-  ): Promise<StructuredDocument['pages'][number]> {
+  ): Promise<StructuredDocumentPage> {
     const structure = await this.getStructure(tenantId, documentId, versionId);
-    const result = structure.pages.find((item) => item.page === page);
+    const result = findStructuredPage(structure, page);
     if (!result) throw new NotFoundException(`PDF page ${page} was not found`);
     return result;
   }
@@ -560,10 +568,10 @@ export class DocumentsService {
     documentId: string,
     versionId: string,
     tableId: string,
-  ): Promise<StructuredDocument['tables'][number]> {
+  ): Promise<StructuredDocumentTable> {
     const structure = await this.getStructure(tenantId, documentId, versionId);
     const result = structure.tables.find((item) => item.id === tableId);
-    if (!result) throw new NotFoundException(`PDF table ${tableId} was not found`);
+    if (!result) throw new NotFoundException(`Document table ${tableId} was not found`);
     return result;
   }
 
@@ -572,12 +580,12 @@ export class DocumentsService {
     documentId: string,
     versionId: string,
     figureId: string,
-  ): Promise<StructuredDocument['pages'][number]['elements'][number]> {
+  ): Promise<StructuredDocumentElement> {
     const structure = await this.getStructure(tenantId, documentId, versionId);
-    const result = structure.pages
-      .flatMap((page) => page.elements)
+    const result = structure.units
+      .flatMap((unit) => unit.elements)
       .find((element) => element.figureId === figureId);
-    if (!result) throw new NotFoundException(`PDF figure ${figureId} was not found`);
+    if (!result) throw new NotFoundException(`Document figure ${figureId} was not found`);
     return result;
   }
 
@@ -597,7 +605,8 @@ export class DocumentsService {
     if (!version) throw new NotFoundException(`Document version ${versionId} not found`);
     const [operations, modelUsage] = await Promise.all([
       this.dataSource.query(
-        `SELECT page_no AS "pageNo", operation, provider, model, status,
+        `SELECT document_format AS "documentFormat", location_type AS "locationType",
+                location, page_no AS "pageNo", operation, provider, model, status,
                 duration_ms AS "durationMs", cache_hit AS "cacheHit",
                 asset_id AS "assetId", metadata, created_at AS "createdAt"
          FROM document_processing_metric
@@ -620,17 +629,6 @@ export class DocumentsService {
     ]);
     return { operations, modelUsage };
   }
-}
-
-function isStructuredDocument(value: unknown): value is StructuredDocument {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<StructuredDocument>;
-  return (
-    candidate.version === 1 &&
-    candidate.format === 'pdf' &&
-    Array.isArray(candidate.pages) &&
-    Array.isArray(candidate.tables)
-  );
 }
 
 function extensionOf(filename: string): string {

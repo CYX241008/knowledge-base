@@ -19,6 +19,7 @@ import {
   CHUNKER_VERSION,
   ElasticsearchChunkIndex,
   chunkMarkdown,
+  parseStructuredDocument,
   type SourceAnchor,
   type StructuredDocument,
 } from '@knowledge-base/rag';
@@ -238,6 +239,7 @@ export class SearchProjectionService {
         sheetName: chunk.anchor.sheet ?? null,
         rowStart: chunk.anchor.rowStart ?? null,
         rowEnd: chunk.anchor.rowEnd ?? null,
+        cellRange: chunk.anchor.range ?? null,
         heading: chunk.anchor.heading ?? null,
         elementType: chunk.anchor.elementType ?? null,
         elementIds:
@@ -421,6 +423,7 @@ function entityAnchor(chunk: DocumentChunkEntity): SourceAnchor {
     sheet: chunk.sheetName ?? undefined,
     rowStart: chunk.rowStart ?? undefined,
     rowEnd: chunk.rowEnd ?? undefined,
+    range: chunk.cellRange ?? undefined,
     heading: chunk.heading ?? undefined,
     elementId: chunk.elementIds[0],
     elementIds: chunk.elementIds,
@@ -440,6 +443,12 @@ function buildChunkContext(title: string, anchor: SourceAnchor): string {
   if (anchor.page) fields.push(`page: ${anchor.page}`);
   if (anchor.slide) fields.push(`slide: ${anchor.slide}`);
   if (anchor.sheet) fields.push(`sheet: ${anchor.sheet}`);
+  if (anchor.rowStart) {
+    fields.push(
+      `rows: ${anchor.rowStart}${anchor.rowEnd && anchor.rowEnd !== anchor.rowStart ? `-${anchor.rowEnd}` : ''}`,
+    );
+  }
+  if (anchor.range) fields.push(`range: ${anchor.range}`);
   if (anchor.sectionPath?.length) fields.push(`section: ${anchor.sectionPath.join(' > ')}`);
   else if (anchor.heading) fields.push(`section: ${anchor.heading}`);
   if (anchor.elementType) fields.push(`element_type: ${anchor.elementType}`);
@@ -456,22 +465,9 @@ function sourceAnchorEntity(anchor: DocumentSourceAnchorEntity): SourceAnchor {
     sheet: anchor.sheetName ?? undefined,
     rowStart: anchor.rowStart ?? undefined,
     rowEnd: anchor.rowEnd ?? undefined,
+    range: anchor.cellRange ?? undefined,
     heading: anchor.heading ?? undefined,
     offsetStart: anchor.markdownOffsetStart,
     offsetEnd: anchor.markdownOffsetEnd,
   };
-}
-
-function parseStructuredDocument(value: string): StructuredDocument | undefined {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (!parsed || typeof parsed !== 'object') return undefined;
-    const structure = parsed as Partial<StructuredDocument>;
-    if (structure.version !== 1 || structure.format !== 'pdf' || !Array.isArray(structure.pages)) {
-      return undefined;
-    }
-    return structure as StructuredDocument;
-  } catch {
-    return undefined;
-  }
 }

@@ -22,6 +22,7 @@
     "e2e:rag": "node scripts/e2e-rag-answer.mjs",
     "e2e:access": "node scripts/e2e-access-control.mjs",
     "e2e:knowledge": "node scripts/e2e-knowledge-organization.mjs",
+    "e2e:formats": "node scripts/e2e-multiformat-structure.mjs",
     "e2e:search-governance": "node scripts/e2e-search-governance.mjs",
     "e2e:system-governance": "node scripts/e2e-system-governance.mjs",
     "e2e:document-review": "node scripts/e2e-document-review.mjs",

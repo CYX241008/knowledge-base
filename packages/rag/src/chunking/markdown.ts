@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { SourceAnchor } from '../index';
-import type { StructuredDocument, StructuredDocumentElement } from '../structured-document';
+import {
+  sameDocumentLocation,
+  type DocumentLocation,
+  type StructuredDocument,
+  type StructuredDocumentElement,
+} from '../structured-document';
 
 export const CHUNKER_VERSION = 'document-elements-v2';
 
@@ -146,6 +151,7 @@ function sameSource(left: SourceAnchor, right: SourceAnchor): boolean {
     left.sheet === right.sheet &&
     left.rowStart === right.rowStart &&
     left.rowEnd === right.rowEnd &&
+    left.range === right.range &&
     left.heading === right.heading &&
     left.elementId === right.elementId &&
     left.elementType === right.elementType &&
@@ -160,8 +166,13 @@ function chunkStructuredDocument(
   maxCharacters: number,
   overlapCharacters: number,
 ): MarkdownChunk[] {
-  const elements = structure.pages
-    .flatMap((page) => page.elements)
+  const unitIdByElementId = new Map(
+    structure.units.flatMap((unit) =>
+      unit.elements.map((element) => [element.id, unit.id] as const),
+    ),
+  );
+  const elements = structure.units
+    .flatMap((unit) => unit.elements)
     .filter(
       (element) =>
         element.offsetEnd > element.offsetStart &&
@@ -207,7 +218,8 @@ function chunkStructuredDocument(
     const groupStart = first?.offsetStart ?? element.offsetStart;
     const sameContext =
       !first ||
-      (first.page === element.page &&
+      (unitIdByElementId.get(first.id) === unitIdByElementId.get(element.id) &&
+        sameDocumentLocation(first.location, element.location) &&
         first.sectionPath.join('\u0000') === element.sectionPath.join('\u0000'));
     if (!sameContext || element.offsetEnd - groupStart > maxCharacters) flushGroup();
     group.push(element);
@@ -347,8 +359,7 @@ function pushChunk(
 
 function elementAnchor(element: StructuredDocumentElement): SourceAnchor {
   return {
-    type: 'page',
-    page: element.page,
+    ...locationAnchor(element.location, element.sectionPath.at(-1)),
     heading: element.sectionPath.at(-1),
     offsetStart: element.offsetStart,
     offsetEnd: element.offsetEnd,
@@ -373,8 +384,7 @@ function groupAnchor(elements: StructuredDocumentElement[]): SourceAnchor {
     .map((element) => element.confidence)
     .filter((value): value is number => value !== undefined);
   return {
-    type: 'page',
-    page: first.page,
+    ...locationAnchor(first.location, first.sectionPath.at(-1)),
     heading: first.sectionPath.at(-1),
     offsetStart: first.offsetStart,
     offsetEnd: elements.at(-1)?.offsetEnd ?? first.offsetEnd,
@@ -390,6 +400,33 @@ function groupAnchor(elements: StructuredDocumentElement[]): SourceAnchor {
         ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length
         : undefined,
   };
+}
+
+function locationAnchor(
+  location: DocumentLocation,
+  fallbackHeading?: string,
+): Pick<
+  SourceAnchor,
+  'type' | 'page' | 'slide' | 'sheet' | 'rowStart' | 'rowEnd' | 'range' | 'heading'
+> {
+  switch (location.type) {
+    case 'page':
+      return { type: 'page', page: location.page };
+    case 'slide':
+      return { type: 'slide', slide: location.slide };
+    case 'sheet':
+      return {
+        type: 'sheet',
+        sheet: location.sheet,
+        rowStart: location.rowStart,
+        rowEnd: location.rowEnd,
+        range: location.range,
+      };
+    case 'section':
+      return { type: 'heading', heading: location.heading ?? fallbackHeading };
+    case 'document':
+      return { type: 'document' };
+  }
 }
 
 function preferredBreak(markdown: string, start: number, end: number): number {

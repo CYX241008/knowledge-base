@@ -20,6 +20,10 @@ import { ModelBudgetGovernance1788624000000 } from './migrations/1788624000000-m
 import { PdfStructure1788710400000 } from './migrations/1788710400000-pdf-structure';
 import { PdfIntelligence1788796800000 } from './migrations/1788796800000-pdf-intelligence';
 import { AgenticPdfTools1788883200000 } from './migrations/1788883200000-agentic-pdf-tools';
+import { DocumentProcessingLocation1788969600000 } from './migrations/1788969600000-document-processing-location';
+import { XlsxCellRange1789056000000 } from './migrations/1789056000000-xlsx-cell-range';
+import { DocumentAssetLocation1789142400000 } from './migrations/1789142400000-document-asset-location';
+import { DocumentAssetHeading1789228800000 } from './migrations/1789228800000-document-asset-heading';
 
 export * from './entities';
 
@@ -43,6 +47,10 @@ export const databaseMigrations = [
   PdfStructure1788710400000,
   PdfIntelligence1788796800000,
   AgenticPdfTools1788883200000,
+  DocumentProcessingLocation1788969600000,
+  XlsxCellRange1789056000000,
+  DocumentAssetLocation1789142400000,
+  DocumentAssetHeading1789228800000,
 ] as const;
 
 export function createDatabaseOptions(

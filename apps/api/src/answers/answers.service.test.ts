@@ -110,6 +110,21 @@ describe('grounded answer helpers', () => {
     expect(localExtractiveAnswer([hit])).toBe('混合检索结合向量召回和关键词召回。 [1]');
   });
 
+  it('selects the sentence that best matches the question', () => {
+    expect(
+      localExtractiveAnswer(
+        [
+          {
+            ...hit,
+            content:
+              'Plain text acceptance is ready. Read the [operations handbook](https://example.com/handbook) before publishing a document.',
+          },
+        ],
+        'What should be read before publishing a document?',
+      ),
+    ).toBe('Read the operations handbook before publishing a document. [1]');
+  });
+
   it('normalizes stable answer run error codes', () => {
     const error = Object.assign(new Error('Search unavailable'), { code: 'SEARCH_UNAVAILABLE' });
     expect(answerRunErrorCode(error, 'failed')).toBe('search_unavailable');
@@ -118,6 +133,29 @@ describe('grounded answer helpers', () => {
 });
 
 describe('AnswersService answer run lifecycle', () => {
+  it('keeps evidence whose score is exactly the configured relevance threshold', async () => {
+    const harness = answerHarness(async () => ({
+      hits: [{ ...hit, score: 0.25 }],
+      total: 1,
+      page: 1,
+      pageSize: 6,
+    }));
+    const events = [];
+
+    for await (const event of harness.service.streamAnswer(auth, {
+      question: '阈值边界',
+      limit: 6,
+    })) {
+      events.push(event);
+    }
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done).toMatchObject({
+      type: 'done',
+      response: { grounded: true },
+    });
+  });
+
   it('creates a running record with the user message and completes it with the answer', async () => {
     const harness = answerHarness(async () => ({ hits: [], total: 0, page: 1, pageSize: 6 }));
     const events = [];

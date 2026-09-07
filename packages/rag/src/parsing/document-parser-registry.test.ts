@@ -9,7 +9,7 @@ describe('DocumentParserRegistry', () => {
       bytes: new TextEncoder().encode('# Notes'),
     });
 
-    expect(result).toMatchObject({ parserName: 'plain-text', parserVersion: '1.0.0' });
+    expect(result).toMatchObject({ parserName: 'plain-text', parserVersion: '2.0.0' });
   });
 
   it('rejects unsupported formats', async () => {

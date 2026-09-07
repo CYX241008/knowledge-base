@@ -17,13 +17,17 @@ pnpm dev
 - MinIO console: http://localhost:9001
 - Elasticsearch: http://localhost:9200
 
-打开 Web 后可以上传 `.txt`、`.md`、`.markdown`、`.docx`、`.pdf`、`.xlsx` 或 `.pptx` 文件（最大 50 MB）。DOCX 保留标题、列表、表格和链接；PDF 生成页边界与页码锚点；XLSX 保留 Sheet、表格、公式缓存结果和合并单元格主值；PPTX 保留幻灯片标题、正文和表格。内嵌图片存入私有 `document_asset`，读取 Markdown 时才生成短期签名地址。工作台的知识问答按 SSE 流式输出，并可从引用直接跳到对应文档预览。
+打开 Web 后可以上传 `.txt`、`.md`、`.markdown`、`.docx`、`.pdf`、`.xlsx` 或 `.pptx` 文件（最大 50 MB）。DOCX 保留标题、列表、表格和链接；PDF 生成页边界与页码锚点；XLSX 保留 Sheet、独立数据区域、A1 range、公式缓存结果、合并单元格、图片和图表缓存数据；PPTX 保留幻灯片标题、正文、表格、图片和坐标。内嵌图片存入私有 `document_asset`，读取 Markdown 时才生成短期签名地址。工作台的知识问答按 SSE 流式输出，并可从引用直接跳到对应文档预览。
+
+所有主解析路径都会生成 `StructuredDocument v2`：PDF 使用页面位置，PPTX 使用幻灯片位置，XLSX 使用 Sheet 和行范围，DOCX/Markdown 使用章节位置，TXT 使用文档文本区间。历史 PDF `v1` 结构在读取时会自动升级，结构化分块会保持这些来源边界。
 
 PDF 摄取会按页识别原生文本、扫描页和图文混排页，恢复文本块、标题层级、阅读顺序和归一化坐标，自动剔除重复页眉页脚，并额外保存结构化 JSON 产物。表格同时保留 Markdown 与二维行列数据，分块时保持语义元素和表格行完整。设置 `PDF_OCR_PROVIDER=tesseract` 后，扫描页会渲染为图片并按需 OCR；生产环境建议通过 `PDF_OCR_LANG_PATH` 固定语言模型来源，避免运行时依赖公共下载服务。
 
 设置 `PDF_VISION_PROVIDER=openai-compatible` 后，Worker 会把达到尺寸阈值的 PDF 图片发送到配置的视觉模型，生成图表、流程图和文档图片的事实描述；装饰图片会保持不可检索。该功能默认关闭，启用意味着抽取图片会传输到 `MODEL_BASE_URL`。分片索引使用文档名、页码、章节路径和元素类型生成 Contextual Retrieval 前缀，同时保留原始正文用于回答引用。PDF 版本会保存 0-100 的解析质量评分和复核原因；点击引用时，工作台会渲染对应 PDF 页，并用解析坐标高亮证据区域。
 
-知识问答使用受控 PDF 工具规划：固定先执行 `search_document`，再根据问题中的页码、表格比较或图表意图按需执行 `read_page`、`get_table`、`inspect_figure` 和 `get_source`。工具调用轨迹保存在 `answer_run.tool_trace`。OCR 与视觉步骤按页记录耗时、状态、提供商、模型和缓存命中；视觉模型的 token 与成本继续记录在 `model_usage_event`。
+设置 `DOCUMENT_OCR_*` 或 `DOCUMENT_VISION_*` 可以覆盖旧的 `PDF_OCR_*`、`PDF_VISION_*` 配置，并将同一 OCR/Vision 服务用于 DOCX、PPTX 和 XLSX 内嵌图片。图片增强结果会写回规范化 Markdown，继承章节、幻灯片或 Sheet range，并通过 `document_processing_metric.location` 记录格式无关的处理来源。
+
+知识问答使用受控文档工具规划：固定先执行 `search_document`，再根据问题中的页码、幻灯片、章节、Sheet range、表格比较或图表意图按需执行 `read_location`、`read_page`、`read_range`、`get_table`、`inspect_figure` 和 `get_source`。工具调用轨迹保存在 `answer_run.tool_trace`。引用面板会按 PDF 页面、PPTX 幻灯片、DOCX/Markdown 章节或 XLSX range 展示对应结构化内容。OCR 与视觉步骤按来源位置记录耗时、状态、提供商、模型和缓存命中；视觉模型的 token 与成本继续记录在 `model_usage_event`。
 
 处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
 
@@ -48,6 +52,12 @@ API 身份只从服务端鉴权上下文取得，客户端提交的 `tenantId`�
 PDF 最多 500 页；PDF/DOCX 最多 500 张图片、单图 10 MB、图片总量 50 MB。XLSX 最多 100 个 Sheet、每 Sheet 50,000 行和 256 列、整份 500,000 个单元格；PPTX 最多 500 页和 250,000 个表格单元格。Office 包最多 10,000 个条目、解压后 200 MB，输出 Markdown 最多 5,000,000 字符，各解析子步骤最长 60 秒。ExcelJS 或自研 PPTX OOXML 路径出现兼容性错误时会降级到 officeparser，资源限制错误不会降级。
 
 匿名黄金样例位于 `packages/rag/test-fixtures`，可用本地 E2E 脚本验收：
+
+```bash
+pnpm e2e:formats
+```
+
+该脚本会在独立空间中验证 TXT、Markdown、DOCX、PDF、XLSX 和 PPTX 的上传、结构对象、发布、检索、格式感知工具、答案和引用，并在结束后清理测试数据。也可以单独上传样例检查解析结果：
 
 ```bash
 node scripts/e2e-document-upload.mjs packages/rag/test-fixtures/parser-sample.docx

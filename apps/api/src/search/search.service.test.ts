@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { prepareRerankCandidates, reciprocalRankFusion, SearchService } from './search.service';
+import {
+  maxChunksPerDocumentForSource,
+  prepareRerankCandidates,
+  reciprocalRankFusion,
+  SearchService,
+} from './search.service';
 
 describe('reciprocalRankFusion', () => {
   it('rewards chunks returned by both retrievers', () => {
@@ -16,6 +21,14 @@ describe('reciprocalRankFusion', () => {
 
     expect(result[0]?.id).toBe('shared');
     expect(result).toHaveLength(3);
+  });
+});
+
+describe('search candidate policy', () => {
+  it('only applies the per-document cap to answer retrieval', () => {
+    expect(maxChunksPerDocumentForSource('answer', 3, 200)).toBe(3);
+    expect(maxChunksPerDocumentForSource('search', 3, 200)).toBe(200);
+    expect(maxChunksPerDocumentForSource(undefined, 3, 200)).toBe(200);
   });
 });
 

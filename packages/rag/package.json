@@ -15,9 +15,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@xmldom/xmldom": "catalog:",
     "exceljs": "catalog:",
     "jszip": "catalog:",
     "mammoth": "catalog:",
+    "mdast-util-from-markdown": "catalog:",
+    "mdast-util-gfm": "catalog:",
+    "micromark-extension-gfm": "catalog:",
     "officeparser": "catalog:",
     "pdf-parse": "catalog:",
     "pdfjs-dist": "catalog:",

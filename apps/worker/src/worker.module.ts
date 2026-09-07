@@ -35,8 +35,8 @@ import { ModelPricingService } from './model-pricing.service';
 import { ModelBudgetService } from './model-budget.service';
 import { DocumentAclProjectionProcessor } from './document-acl-projection.processor';
 import { DocumentSearchProjectionProcessor } from './document-search-projection.processor';
-import { TesseractPdfOcrService } from './tesseract-pdf-ocr.service';
-import { PdfVisionService } from './pdf-vision.service';
+import { TesseractOcrService } from './tesseract-ocr.service';
+import { DocumentVisionService } from './document-vision.service';
 import { DocumentProcessingMetricsService } from './document-processing-metrics.service';
 
 @Module({
@@ -102,8 +102,8 @@ import { DocumentProcessingMetricsService } from './document-processing-metrics.
     ModelMetricsService,
     ModelPricingService,
     ModelBudgetService,
-    TesseractPdfOcrService,
-    PdfVisionService,
+    TesseractOcrService,
+    DocumentVisionService,
     DocumentProcessingMetricsService,
     SearchProjectionService,
   ],

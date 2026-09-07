@@ -342,7 +342,8 @@ ready | retrying | failed | cancelled`
 - 外键：`document_version_id -> document_version.id ON DELETE CASCADE`
 - 字段：`id`、`tenant_id`、`document_version_id`、
   `anchor_type varchar(32)`、`page_no?`、`slide_no?`、
-  `sheet_name varchar(255)?`、`row_start?`、`row_end?`、`heading text?`、
+  `sheet_name varchar(255)?`、`row_start?`、`row_end?`、`cell_range varchar(64)?`、
+  `heading text?`、
   `markdown_offset_start integer`、`markdown_offset_end integer`
 - 索引：`(tenant_id, document_version_id)`
 
@@ -353,7 +354,8 @@ ready | retrying | failed | cancelled`
 - 外键：`document_version_id -> document_version.id ON DELETE CASCADE`
 - 字段：`id`、`tenant_id`、`document_version_id`、`kind varchar(32)`、
   `filename varchar(1024)`、`object_key text`、`mime_type varchar(255)`、
-  `size_bytes bigint`、`sha256 char(64)`、`page_no integer?`、
+  `size_bytes bigint`、`sha256 char(64)`、`page_no integer?`、`slide_no integer?`、
+  `sheet_name varchar(255)?`、`row_start?`、`row_end?`、`cell_range varchar(64)?`、
   `ordinal integer`、`created_at`
 - 唯一：`(document_version_id, object_key)`
 
@@ -369,7 +371,8 @@ ready | retrying | failed | cancelled`
   `content_sha256 char(64)`、`embedding_input_sha256 char(64)`、
   `token_count integer`、`anchor_type varchar(32)`、`page_no?`、
   `slide_no?`、`sheet_name varchar(255)?`、`row_start?`、`row_end?`、
-  `heading text?`、`element_type varchar(32)?`、`element_ids varchar[]`、
+  `cell_range varchar(64)?`、`heading text?`、`element_type varchar(32)?`、
+  `element_ids varchar[]`、
   `section_path text[]`、`table_id varchar(128)?`、`figure_id varchar(128)?`、
   `bounding_boxes jsonb`、`source_confidence real?`、`context_summary text?`、
   `markdown_offset_start integer`、
@@ -397,10 +400,13 @@ ready | retrying | failed | cancelled`
 
 #### `document_processing_metric`
 
-- 用途：记录 PDF 每页 OCR 与视觉理解的状态、耗时、模型和缓存命中。
-- 字段：`tenant_id`、`document_version_id`、`page_no`、`operation`、
-  `provider`、`model?`、`status`、`duration_ms`、`cache_hit`、`asset_id?`、
+- 用途：记录各格式 OCR 与视觉理解的来源位置、状态、耗时、模型和缓存命中。
+- 字段：`tenant_id`、`document_version_id`、`document_format`、
+  `location_type`、`location jsonb`、`page_no?`、`operation`、`provider`、
+  `model?`、`status`、`duration_ms`、`cache_hit`、`asset_id?`、
   `metadata jsonb`、`created_at`
+- `location` 使用统一来源位置模型，可表示 PDF 页、PPTX 幻灯片、XLSX Sheet
+  或 DOCX/Markdown 章节；`page_no` 仅作为 PDF 查询兼容列。
 
 ### 4.5 文档审核
 

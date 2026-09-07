@@ -28,8 +28,8 @@ import { DocumentParserRegistry, type ParsedDocument } from '@knowledge-base/rag
 import { DataSource, Repository } from 'typeorm';
 import { OBJECT_STORAGE } from './worker.constants';
 import { SearchProjectionService } from './search-projection.service';
-import { TesseractPdfOcrService } from './tesseract-pdf-ocr.service';
-import { PdfVisionService } from './pdf-vision.service';
+import { TesseractOcrService } from './tesseract-ocr.service';
+import { DocumentVisionService } from './document-vision.service';
 import { DocumentProcessingMetricsService } from './document-processing-metrics.service';
 
 const PROCESSOR_VERSION = 'document-ingestion-v7';
@@ -57,29 +57,133 @@ export class DocumentIngestionProcessor extends WorkerHost {
     private readonly stageRepository: Repository<IngestionStageEntity>,
     @Inject(SearchProjectionService)
     private readonly searchProjection: SearchProjectionService,
-    @Inject(TesseractPdfOcrService)
-    private readonly pdfOcr: TesseractPdfOcrService,
-    @Inject(PdfVisionService)
-    private readonly pdfVision: PdfVisionService,
+    @Inject(TesseractOcrService)
+    private readonly documentOcr: TesseractOcrService,
+    @Inject(DocumentVisionService)
+    private readonly documentVision: DocumentVisionService,
     @Inject(DocumentProcessingMetricsService)
     private readonly processingMetrics: DocumentProcessingMetricsService,
   ) {
     super();
     this.parser = new DocumentParserRegistry({
+      docx: {
+        ocrEngine: this.documentOcr.enabled ? this.documentOcr : undefined,
+        ocrMaxImages: this.config.get('DOCUMENT_OCR_MAX_IMAGES') ?? 100,
+        ocrMinPixels: this.config.get('DOCUMENT_OCR_MIN_PIXELS') ?? 40_000,
+        ocrTimeoutMs:
+          this.config.get('DOCUMENT_OCR_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_OCR_TIMEOUT_MS'),
+        ocrMinConfidence:
+          this.config.get('DOCUMENT_OCR_MIN_CONFIDENCE') ??
+          this.config.getOrThrow('PDF_OCR_MIN_CONFIDENCE'),
+        ocrProvider:
+          this.config.get('DOCUMENT_OCR_PROVIDER') ?? this.config.getOrThrow('PDF_OCR_PROVIDER'),
+        visionEngine: this.documentVision.enabled ? this.documentVision : undefined,
+        visionMaxImages:
+          this.config.get('DOCUMENT_VISION_MAX_IMAGES') ??
+          this.config.getOrThrow('PDF_VISION_MAX_IMAGES'),
+        visionMinPixels:
+          this.config.get('DOCUMENT_VISION_MIN_PIXELS') ??
+          this.config.getOrThrow('PDF_VISION_MIN_PIXELS'),
+        visionTimeoutMs:
+          this.config.get('DOCUMENT_VISION_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
+        visionProvider:
+          this.config.get('DOCUMENT_VISION_PROVIDER') ??
+          this.config.getOrThrow('PDF_VISION_PROVIDER'),
+        visionModel:
+          this.config.get('DOCUMENT_VISION_MODEL') ?? this.config.getOrThrow('PDF_VISION_MODEL'),
+        onProcessingMetric: this.processingMetrics.observe,
+      },
       pdf: {
-        ocrEngine: this.pdfOcr.enabled ? this.pdfOcr : undefined,
+        ocrEngine: this.documentOcr.enabled ? this.documentOcr : undefined,
         ocrMaxPages: this.config.getOrThrow('PDF_OCR_MAX_PAGES'),
         ocrRenderWidth: this.config.getOrThrow('PDF_OCR_RENDER_WIDTH'),
-        ocrTimeoutMs: this.config.getOrThrow('PDF_OCR_TIMEOUT_MS'),
-        ocrMinConfidence: this.config.getOrThrow('PDF_OCR_MIN_CONFIDENCE'),
+        ocrTimeoutMs:
+          this.config.get('DOCUMENT_OCR_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_OCR_TIMEOUT_MS'),
+        ocrMinConfidence:
+          this.config.get('DOCUMENT_OCR_MIN_CONFIDENCE') ??
+          this.config.getOrThrow('PDF_OCR_MIN_CONFIDENCE'),
+        ocrProvider:
+          this.config.get('DOCUMENT_OCR_PROVIDER') ?? this.config.getOrThrow('PDF_OCR_PROVIDER'),
         nativeTextMinCharacters: this.config.getOrThrow('PDF_NATIVE_TEXT_MIN_CHARACTERS'),
         headerFooterMinPageRatio: this.config.getOrThrow('PDF_HEADER_FOOTER_MIN_PAGE_RATIO'),
-        visionEngine: this.pdfVision.enabled ? this.pdfVision : undefined,
-        visionMaxImages: this.config.getOrThrow('PDF_VISION_MAX_IMAGES'),
-        visionMinPixels: this.config.getOrThrow('PDF_VISION_MIN_PIXELS'),
-        visionTimeoutMs: this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
+        visionEngine: this.documentVision.enabled ? this.documentVision : undefined,
+        visionMaxImages:
+          this.config.get('DOCUMENT_VISION_MAX_IMAGES') ??
+          this.config.getOrThrow('PDF_VISION_MAX_IMAGES'),
+        visionMinPixels:
+          this.config.get('DOCUMENT_VISION_MIN_PIXELS') ??
+          this.config.getOrThrow('PDF_VISION_MIN_PIXELS'),
+        visionTimeoutMs:
+          this.config.get('DOCUMENT_VISION_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
         visionRequiredForMixedPages: this.config.getOrThrow('PDF_VISION_REQUIRED_FOR_MIXED_PAGES'),
+        visionProvider:
+          this.config.get('DOCUMENT_VISION_PROVIDER') ??
+          this.config.getOrThrow('PDF_VISION_PROVIDER'),
+        visionModel:
+          this.config.get('DOCUMENT_VISION_MODEL') ?? this.config.getOrThrow('PDF_VISION_MODEL'),
         qualityMinScore: this.config.getOrThrow('PDF_QUALITY_MIN_SCORE'),
+        onProcessingMetric: this.processingMetrics.observe,
+      },
+      pptx: {
+        ocrEngine: this.documentOcr.enabled ? this.documentOcr : undefined,
+        ocrMaxImages: this.config.get('DOCUMENT_OCR_MAX_IMAGES') ?? 100,
+        ocrMinPixels: this.config.get('DOCUMENT_OCR_MIN_PIXELS') ?? 40_000,
+        ocrTimeoutMs:
+          this.config.get('DOCUMENT_OCR_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_OCR_TIMEOUT_MS'),
+        ocrMinConfidence:
+          this.config.get('DOCUMENT_OCR_MIN_CONFIDENCE') ??
+          this.config.getOrThrow('PDF_OCR_MIN_CONFIDENCE'),
+        ocrProvider:
+          this.config.get('DOCUMENT_OCR_PROVIDER') ?? this.config.getOrThrow('PDF_OCR_PROVIDER'),
+        visionEngine: this.documentVision.enabled ? this.documentVision : undefined,
+        visionMaxImages:
+          this.config.get('DOCUMENT_VISION_MAX_IMAGES') ??
+          this.config.getOrThrow('PDF_VISION_MAX_IMAGES'),
+        visionMinPixels:
+          this.config.get('DOCUMENT_VISION_MIN_PIXELS') ??
+          this.config.getOrThrow('PDF_VISION_MIN_PIXELS'),
+        visionTimeoutMs:
+          this.config.get('DOCUMENT_VISION_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
+        visionProvider:
+          this.config.get('DOCUMENT_VISION_PROVIDER') ??
+          this.config.getOrThrow('PDF_VISION_PROVIDER'),
+        visionModel:
+          this.config.get('DOCUMENT_VISION_MODEL') ?? this.config.getOrThrow('PDF_VISION_MODEL'),
+        onProcessingMetric: this.processingMetrics.observe,
+      },
+      xlsx: {
+        ocrEngine: this.documentOcr.enabled ? this.documentOcr : undefined,
+        ocrMaxImages: this.config.get('DOCUMENT_OCR_MAX_IMAGES') ?? 100,
+        ocrMinPixels: this.config.get('DOCUMENT_OCR_MIN_PIXELS') ?? 40_000,
+        ocrTimeoutMs:
+          this.config.get('DOCUMENT_OCR_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_OCR_TIMEOUT_MS'),
+        ocrMinConfidence:
+          this.config.get('DOCUMENT_OCR_MIN_CONFIDENCE') ??
+          this.config.getOrThrow('PDF_OCR_MIN_CONFIDENCE'),
+        ocrProvider:
+          this.config.get('DOCUMENT_OCR_PROVIDER') ?? this.config.getOrThrow('PDF_OCR_PROVIDER'),
+        visionEngine: this.documentVision.enabled ? this.documentVision : undefined,
+        visionMaxImages:
+          this.config.get('DOCUMENT_VISION_MAX_IMAGES') ??
+          this.config.getOrThrow('PDF_VISION_MAX_IMAGES'),
+        visionMinPixels:
+          this.config.get('DOCUMENT_VISION_MIN_PIXELS') ??
+          this.config.getOrThrow('PDF_VISION_MIN_PIXELS'),
+        visionTimeoutMs:
+          this.config.get('DOCUMENT_VISION_TIMEOUT_MS') ??
+          this.config.getOrThrow('PDF_VISION_TIMEOUT_MS'),
+        visionProvider:
+          this.config.get('DOCUMENT_VISION_PROVIDER') ??
+          this.config.getOrThrow('PDF_VISION_PROVIDER'),
+        visionModel:
+          this.config.get('DOCUMENT_VISION_MODEL') ?? this.config.getOrThrow('PDF_VISION_MODEL'),
         onProcessingMetric: this.processingMetrics.observe,
       },
     });
@@ -432,6 +536,12 @@ export class DocumentIngestionProcessor extends WorkerHost {
             sizeBytes: asset.bytes.byteLength,
             sha256,
             pageNo: asset.anchor?.page ?? null,
+            slideNo: asset.anchor?.slide ?? null,
+            sheetName: asset.anchor?.sheet ?? null,
+            rowStart: asset.anchor?.rowStart ?? null,
+            rowEnd: asset.anchor?.rowEnd ?? null,
+            cellRange: asset.anchor?.range ?? null,
+            heading: asset.anchor?.heading ?? null,
             ordinal,
           };
         } catch (error) {
@@ -451,8 +561,8 @@ export class DocumentIngestionProcessor extends WorkerHost {
     for (const filename of failedAssetFilenames) {
       normalizedMarkdown = markAssetUnavailable(normalizedMarkdown, filename);
       if (parsed.structure) {
-        for (const page of parsed.structure.pages) {
-          for (const element of page.elements) {
+        for (const unit of parsed.structure.units) {
+          for (const element of unit.elements) {
             element.markdown = markAssetUnavailable(element.markdown, filename);
           }
         }
@@ -503,6 +613,7 @@ export class DocumentIngestionProcessor extends WorkerHost {
           sheetName: anchor.sheet ?? null,
           rowStart: anchor.rowStart ?? null,
           rowEnd: anchor.rowEnd ?? null,
+          cellRange: anchor.range ?? null,
           heading: anchor.heading ?? null,
           markdownOffsetStart: anchor.offsetStart,
           markdownOffsetEnd: anchor.offsetEnd,

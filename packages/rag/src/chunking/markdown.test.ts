@@ -76,22 +76,24 @@ describe('chunkMarkdown', () => {
     const paragraphStart = markdown.indexOf(paragraph);
     const tableStart = markdown.indexOf(table);
     const structure: StructuredDocument = {
-      version: 1,
+      version: 2,
       format: 'pdf',
       quality: {
         status: 'pass',
         score: 100,
         reasons: [],
-        scannedPages: 0,
-        unprocessedScannedPages: 0,
-        lowConfidenceOcrPages: 0,
-        emptySearchablePages: 0,
-        unanalyzedVisuals: 0,
+        metrics: {
+          scannedPages: 0,
+          unprocessedScannedPages: 0,
+          lowConfidenceOcrPages: 0,
+          emptySearchablePages: 0,
+          unanalyzedVisuals: 0,
+        },
       },
       tables: [
         {
           id: 'p1-t1',
-          page: 1,
+          location: { type: 'page', page: 1 },
           rows: [
             ['Region', 'Revenue'],
             ['North America', '100000'],
@@ -101,9 +103,10 @@ describe('chunkMarkdown', () => {
           markdown: table.slice('### Table 1\n\n'.length),
         },
       ],
-      pages: [
+      units: [
         {
-          page: 1,
+          id: 'page-1',
+          location: { type: 'page', page: 1 },
           width: 600,
           height: 800,
           classification: 'native',
@@ -116,7 +119,7 @@ describe('chunkMarkdown', () => {
             {
               id: 'p1-e1',
               kind: 'heading',
-              page: 1,
+              location: { type: 'page', page: 1 },
               order: 1,
               text: 'Financial results',
               markdown: heading,
@@ -129,7 +132,7 @@ describe('chunkMarkdown', () => {
             {
               id: 'p1-e2',
               kind: 'paragraph',
-              page: 1,
+              location: { type: 'page', page: 1 },
               order: 2,
               text: paragraph,
               markdown: paragraph,
@@ -142,7 +145,7 @@ describe('chunkMarkdown', () => {
             {
               id: 'p1-t1',
               kind: 'table',
-              page: 1,
+              location: { type: 'page', page: 1 },
               order: 3,
               text: 'Region | Revenue',
               markdown: table,
@@ -169,5 +172,90 @@ describe('chunkMarkdown', () => {
     expect(chunks[0]?.content).toContain('Revenue increased');
     expect(tableChunks.length).toBeGreaterThan(1);
     expect(tableChunks.every((chunk) => chunk.content.includes('| Region | Revenue |'))).toBe(true);
+  });
+
+  it('preserves slide and sheet locations in structured chunks', () => {
+    const slideMarkdown = '## Slide 1\n\nArchitecture overview';
+    const slideStructure: StructuredDocument = {
+      version: 2,
+      format: 'pptx',
+      quality: { status: 'pass', score: 100, reasons: [], metrics: {} },
+      tables: [],
+      units: [
+        {
+          id: 'slide-1',
+          location: { type: 'slide', slide: 1 },
+          elements: [
+            {
+              id: 's1-e1',
+              kind: 'paragraph',
+              location: { type: 'slide', slide: 1 },
+              order: 1,
+              text: 'Architecture overview',
+              markdown: 'Architecture overview',
+              offsetStart: slideMarkdown.indexOf('Architecture'),
+              offsetEnd: slideMarkdown.length,
+              searchable: true,
+              source: 'native',
+              sectionPath: ['Architecture'],
+            },
+          ],
+        },
+      ],
+    };
+    const sheetMarkdown = '## Sheet: Summary\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |';
+    const sheetStructure: StructuredDocument = {
+      version: 2,
+      format: 'xlsx',
+      quality: { status: 'pass', score: 100, reasons: [], metrics: {} },
+      tables: [],
+      units: [
+        {
+          id: 'sheet-Summary',
+          location: {
+            type: 'sheet',
+            sheet: 'Summary',
+            rowStart: 1,
+            rowEnd: 2,
+            range: 'A1:B2',
+          },
+          elements: [
+            {
+              id: 'sheet-Summary-e1',
+              kind: 'table',
+              location: {
+                type: 'sheet',
+                sheet: 'Summary',
+                rowStart: 1,
+                rowEnd: 2,
+                range: 'A1:B2',
+              },
+              order: 1,
+              text: 'Name | Value\nAlpha | 1',
+              markdown: sheetMarkdown,
+              offsetStart: 0,
+              offsetEnd: sheetMarkdown.length,
+              searchable: true,
+              source: 'native',
+              sectionPath: ['Summary'],
+              tableId: 'sheet-Summary-t1',
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      chunkMarkdown(versionId, slideMarkdown, [], { structure: slideStructure })[0]?.anchor,
+    ).toMatchObject({ type: 'slide', slide: 1 });
+    expect(
+      chunkMarkdown(versionId, sheetMarkdown, [], { structure: sheetStructure })[0]?.anchor,
+    ).toMatchObject({
+      type: 'sheet',
+      sheet: 'Summary',
+      rowStart: 1,
+      rowEnd: 2,
+      range: 'A1:B2',
+    });
   });
 });

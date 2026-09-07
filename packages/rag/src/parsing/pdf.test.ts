@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { PdfOcrEngine, PdfVisionEngine } from '../structured-document';
+import {
+  getStructuredPage,
+  type DocumentProcessingMetric,
+  type PdfOcrEngine,
+  type PdfVisionEngine,
+} from '../structured-document';
 import { renderPdfPagePng } from './pdf-preview';
 import { classifyPdfPage, PdfDocumentParser } from './pdf';
 
@@ -33,26 +38,28 @@ describe('PdfDocumentParser', () => {
     });
     expect(result.markdown).toContain('knowledge-asset://pdf-image-p1-001.png');
     expect(result.structure).toMatchObject({
-      version: 1,
+      version: 2,
       format: 'pdf',
-      pages: [
-        { page: 1, classification: 'mixed' },
-        { page: 2, classification: 'native' },
+      units: [
+        { location: { type: 'page', page: 1 }, classification: 'mixed' },
+        { location: { type: 'page', page: 2 }, classification: 'native' },
       ],
     });
   }, 20_000);
 
   it('routes scanned pages through the configured OCR engine', async () => {
     const calls: number[] = [];
+    const metrics: DocumentProcessingMetric[] = [];
     const ocrEngine: PdfOcrEngine = {
       async recognize(input) {
-        calls.push(input.page);
+        if (input.location.type !== 'page') throw new Error('Expected page OCR input');
+        calls.push(input.location.page);
         return {
-          text: `OCR content for page ${input.page}`,
+          text: `OCR content for page ${input.location.page}`,
           confidence: 92,
           blocks: [
             {
-              text: `OCR content for page ${input.page}`,
+              text: `OCR content for page ${input.location.page}`,
               confidence: 92,
               bbox: { x: 0.1, y: 0.1, width: 0.8, height: 0.2 },
             },
@@ -63,6 +70,9 @@ describe('PdfDocumentParser', () => {
     const parser = new PdfDocumentParser({
       ocrEngine,
       nativeTextMinCharacters: 10_000,
+      onProcessingMetric(metric) {
+        metrics.push(metric);
+      },
     });
     const result = await parser.parse({
       filename: 'parser-sample.pdf',
@@ -71,9 +81,21 @@ describe('PdfDocumentParser', () => {
     });
 
     expect(calls).toEqual([1, 2]);
+    expect(metrics).toEqual([
+      expect.objectContaining({
+        operation: 'ocr',
+        format: 'pdf',
+        location: { type: 'page', page: 1 },
+      }),
+      expect.objectContaining({
+        operation: 'ocr',
+        format: 'pdf',
+        location: { type: 'page', page: 2 },
+      }),
+    ]);
     expect(result.stats).toMatchObject({ scannedPages: 2, ocrPages: 2 });
     expect(result.markdown).toContain('OCR content for page 1');
-    expect(result.structure?.pages[0]?.elements).toEqual(
+    expect(result.structure && getStructuredPage(result.structure, 1)?.elements).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ source: 'ocr', confidence: 92, searchable: true }),
       ]),
@@ -89,9 +111,10 @@ describe('PdfDocumentParser', () => {
   it('adds searchable visual descriptions for eligible PDF images', async () => {
     const visionEngine: PdfVisionEngine = {
       async analyze(input) {
+        if (input.location.type !== 'page') throw new Error('Expected page vision input');
         return {
           kind: 'chart',
-          description: `Chart on page ${input.page} shows a rising blue series.`,
+          description: `Chart on page ${input.location.page} shows a rising blue series.`,
           searchable: true,
           confidence: 88,
         };
@@ -109,8 +132,10 @@ describe('PdfDocumentParser', () => {
     });
 
     expect(result.markdown).toContain('Visual analysis: Chart on page 1');
-    expect(result.structure?.pages[0]?.visionAnalyzedImages).toBe(1);
-    expect(result.structure?.pages[0]?.elements).toEqual(
+    expect(result.structure && getStructuredPage(result.structure, 1)?.visionAnalyzedImages).toBe(
+      1,
+    );
+    expect(result.structure && getStructuredPage(result.structure, 1)?.elements).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'figure',
@@ -133,8 +158,10 @@ describe('PdfDocumentParser', () => {
 
     expect(result.structure?.quality).toMatchObject({
       status: 'review',
-      scannedPages: 2,
-      unprocessedScannedPages: 2,
+      metrics: {
+        scannedPages: 2,
+        unprocessedScannedPages: 2,
+      },
     });
   });
 
