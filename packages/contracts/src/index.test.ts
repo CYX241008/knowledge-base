@@ -14,6 +14,7 @@ import {
   SearchDocumentsRequestSchema,
   SearchDocumentsResponseSchema,
   SearchSourceSchema,
+  SubmitAnswerFeedbackRequestSchema,
   SubmitSearchFeedbackRequestSchema,
   UpdateSystemSettingsRequestSchema,
   documentAclProjectionQueueJobId,
@@ -307,6 +308,7 @@ describe('reliable queue contracts', () => {
             degraded: false,
             degradationReason: null,
             estimatedCostUsd: 0,
+            feedback: null,
             startedAt: '2026-09-03T00:00:00.000Z',
             completedAt: '2026-09-03T00:00:01.000Z',
           },
@@ -358,5 +360,21 @@ describe('reliable queue contracts', () => {
     expect(
       SubmitSearchFeedbackRequestSchema.safeParse({ ...feedback, reason: 'slow' }).success,
     ).toBe(false);
+  });
+
+  it('requires a reason when an answer is marked unhelpful', () => {
+    expect(
+      SubmitAnswerFeedbackRequestSchema.safeParse({
+        rating: 'unhelpful',
+        reason: 'citation_incorrect',
+        comment: 'Citation 2 does not support the answer',
+      }).success,
+    ).toBe(true);
+    expect(
+      SubmitAnswerFeedbackRequestSchema.safeParse({
+        rating: 'unhelpful',
+      }).success,
+    ).toBe(false);
+    expect(SubmitAnswerFeedbackRequestSchema.safeParse({ rating: 'helpful' }).success).toBe(true);
   });
 });

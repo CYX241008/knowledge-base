@@ -24,6 +24,7 @@ import { DocumentProcessingLocation1788969600000 } from './migrations/1788969600
 import { XlsxCellRange1789056000000 } from './migrations/1789056000000-xlsx-cell-range';
 import { DocumentAssetLocation1789142400000 } from './migrations/1789142400000-document-asset-location';
 import { DocumentAssetHeading1789228800000 } from './migrations/1789228800000-document-asset-heading';
+import { AnswerFeedback1789315200000 } from './migrations/1789315200000-answer-feedback';
 
 export * from './entities';
 
@@ -51,6 +52,7 @@ export const databaseMigrations = [
   XlsxCellRange1789056000000,
   DocumentAssetLocation1789142400000,
   DocumentAssetHeading1789228800000,
+  AnswerFeedback1789315200000,
 ] as const;
 
 export function createDatabaseOptions(

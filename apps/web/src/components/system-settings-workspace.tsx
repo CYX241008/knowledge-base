@@ -1,6 +1,7 @@
 'use client';
 
 import type {
+  AnswerFeedbackReason,
   AuditEventItem,
   AuditEventListResponse,
   HealthResponse,
@@ -419,8 +420,8 @@ function RuntimeSettingsView({
         </label>
         <label className="settings-toggle-row">
           <span>
-            <strong>收集检索反馈</strong>
-            <small>允许用户标记搜索结果是否有用并补充原因。</small>
+            <strong>收集质量反馈</strong>
+            <small>允许用户评价搜索结果和知识库回答并补充原因。</small>
           </span>
           <input
             checked={draft.retrieval.feedbackEnabled}
@@ -762,8 +763,13 @@ function QualityView({
         />
         <QualityMetric
           detail={`${data.feedback.helpful} 有用 · ${data.feedback.unhelpful} 无用`}
-          label="反馈有用率"
+          label="搜索反馈有用率"
           value={formatPercent(data.feedback.helpfulRate)}
+        />
+        <QualityMetric
+          detail={`${data.answerFeedback.helpful} 有用 · ${data.answerFeedback.unhelpful} 无用`}
+          label="回答反馈有用率"
+          value={formatPercent(data.answerFeedback.helpfulRate)}
         />
         <QualityMetric
           detail={`今日 ${formatUsd(data.models.budget.daily.usedUsd)} / ${formatBudgetLimit(
@@ -777,8 +783,8 @@ function QualityView({
         <section className="quality-reasons">
           <div className="settings-section-heading compact">
             <div>
-              <h2>无用反馈原因</h2>
-              <p>用于识别内容与召回治理重点。</p>
+              <h2>搜索反馈原因</h2>
+              <p>用于识别召回和内容治理重点。</p>
             </div>
             <CircleDollarSign size={18} />
           </div>
@@ -793,6 +799,27 @@ function QualityView({
             </ol>
           ) : (
             <p className="quality-empty">暂无反馈原因数据</p>
+          )}
+        </section>
+        <section className="quality-reasons">
+          <div className="settings-section-heading compact">
+            <div>
+              <h2>回答反馈原因</h2>
+              <p>无用回答会进入待标注评测候选。</p>
+            </div>
+            <Activity size={18} />
+          </div>
+          {data.answerFeedback.reasons.length ? (
+            <ol>
+              {data.answerFeedback.reasons.map((item) => (
+                <li key={item.reason ?? 'unspecified'}>
+                  <span>{answerFeedbackReasonLabel(item.reason)}</span>
+                  <strong>{item.count}</strong>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="quality-empty">暂无回答反馈原因数据</p>
           )}
         </section>
         <section className="quality-reasons">
@@ -1001,6 +1028,19 @@ function feedbackReasonLabel(reason: SearchFeedbackReason | null): string {
     incomplete: '信息不完整',
     outdated: '内容已过时',
     incorrect: '内容不正确',
+    other: '其他',
+  }[reason];
+}
+
+function answerFeedbackReasonLabel(reason: AnswerFeedbackReason | null): string {
+  if (!reason) return '未说明';
+  return {
+    answer_incorrect: '答案不正确',
+    citation_incorrect: '引用不支持答案',
+    incomplete: '回答不完整',
+    outdated: '内容已过时',
+    hallucinated: '包含知识库外信息',
+    should_have_refused: '本应拒绝回答',
     other: '其他',
   }[reason];
 }

@@ -1,4 +1,5 @@
 import {
+  AnswerFeedbackEntity,
   AnswerRunEntity,
   ChatCitationEntity,
   ChatConversationEntity,
@@ -19,6 +20,7 @@ const conversationId = '33333333-3333-4333-8333-333333333333';
 const userMessageId = '44444444-4444-4444-8444-444444444444';
 const assistantMessageId = '55555555-5555-4555-8555-555555555555';
 const runId = '66666666-6666-4666-8666-666666666666';
+const feedbackId = '77777777-7777-4777-8777-777777777777';
 
 describe('ConversationsService', () => {
   it('attaches the answer run to both messages in a completed exchange', async () => {
@@ -63,6 +65,18 @@ describe('ConversationsService', () => {
           completedAt,
         },
       ],
+      feedback: [
+        {
+          id: feedbackId,
+          tenantId: auth.tenantId,
+          answerRunId: runId,
+          userId: auth.userId,
+          rating: 'unhelpful',
+          reason: 'incomplete',
+          comment: 'Missing one condition',
+          updatedAt: completedAt,
+        },
+      ],
     });
 
     const result = await service.findOne(auth, conversationId);
@@ -76,6 +90,11 @@ describe('ConversationsService', () => {
     expect(result.messages[1]?.answerRun).toMatchObject({
       id: runId,
       userMessageId,
+      feedback: {
+        feedbackId,
+        rating: 'unhelpful',
+        reason: 'incomplete',
+      },
     });
   });
 
@@ -112,6 +131,7 @@ describe('ConversationsService', () => {
           completedAt,
         },
       ],
+      feedback: [],
     });
 
     const result = await service.findOne(auth, conversationId);
@@ -127,6 +147,7 @@ describe('ConversationsService', () => {
 function serviceWith(input: {
   messages: Array<Record<string, unknown>>;
   runs: Array<Record<string, unknown>>;
+  feedback: Array<Record<string, unknown>>;
 }) {
   const repositories = new Map<unknown, unknown>([
     [
@@ -144,6 +165,7 @@ function serviceWith(input: {
     ],
     [ChatMessageEntity, { find: vi.fn(async () => input.messages) }],
     [AnswerRunEntity, { find: vi.fn(async () => input.runs) }],
+    [AnswerFeedbackEntity, { find: vi.fn(async () => input.feedback) }],
     [ChatCitationEntity, { find: vi.fn(async () => []) }],
   ]);
   return new ConversationsService({

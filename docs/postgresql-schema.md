@@ -38,7 +38,7 @@
 | 文档与版本      | `document`、`document_version`、`document_source_anchor`、`document_asset`、`document_chunk`                       |
 | 文档审核        | `document_review_request`、`document_review_action`                                                                |
 | 文档摄取        | `ingestion_job`、`ingestion_stage`、`outbox_event`                                                                 |
-| RAG 会话        | `chat_conversation`、`chat_message`、`answer_run`、`chat_citation`                                                 |
+| RAG 会话        | `chat_conversation`、`chat_message`、`answer_run`、`chat_citation`、`answer_feedback`                              |
 | 检索与治理      | `search_query_event`、`search_feedback`、`tenant_system_setting`、`audit_event`                                    |
 
 `tenant_id` 是主要的数据隔离字段，但并非每张含 `tenant_id` 的表都建立了数据库外键，详见第 7 节。
@@ -558,6 +558,22 @@ ready | retrying | failed | cancelled`
   - `reason`: `irrelevant | incomplete | outdated | incorrect | other`
   - `comment` 最长 1000 字符
 
+#### `answer_feedback`
+
+- 用途：用户对最终知识库回答的反馈，并作为真实评测候选来源。
+- 主键：`id`
+- 外键：`tenant_id -> tenant.id`、`answer_run_id + tenant_id -> answer_run.id + tenant_id`、
+  `user_id -> app_user.id`，均为 `ON DELETE CASCADE`
+- 字段：`id`、`tenant_id`、`answer_run_id`、`user_id`、
+  `rating varchar(16)`、`reason varchar(32)?`、`comment text?`、
+  `created_at`、`updated_at`
+- 唯一：`(tenant_id, answer_run_id, user_id)`
+- 约束：
+  - `rating`: `helpful | unhelpful`
+  - 无用回答必须填写原因
+  - `reason`: `answer_incorrect | citation_incorrect | incomplete | outdated | hallucinated | should_have_refused | other`
+  - `comment` 最长 1000 字符
+
 #### `tenant_system_setting`
 
 - 用途：每租户一份搜索、反馈和审计配置。
@@ -648,6 +664,7 @@ ready | retrying | failed | cancelled`
 | `chat_message`                         | `answer_run`（用户消息）                          | 1:0..1     | `CASCADE`        |
 | `chat_message`                         | `answer_run`（回答消息）                          | 1:0..1     | `NO ACTION`      |
 | `chat_message`                         | `chat_citation`                                   | 1:N        | `CASCADE`        |
+| `answer_run`                           | `answer_feedback`                                 | 1:N        | `CASCADE`        |
 | `search_query_event`                   | `search_feedback`                                 | 1:N        | `CASCADE`        |
 
 ## 6. 关键索引

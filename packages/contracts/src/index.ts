@@ -494,6 +494,49 @@ export const SubmitSearchFeedbackResponseSchema = z.object({
 });
 export type SubmitSearchFeedbackResponse = z.infer<typeof SubmitSearchFeedbackResponseSchema>;
 
+export const AnswerFeedbackRatingSchema = SearchFeedbackRatingSchema;
+export type AnswerFeedbackRating = z.infer<typeof AnswerFeedbackRatingSchema>;
+
+export const AnswerFeedbackReasonSchema = z.enum([
+  'answer_incorrect',
+  'citation_incorrect',
+  'incomplete',
+  'outdated',
+  'hallucinated',
+  'should_have_refused',
+  'other',
+]);
+export type AnswerFeedbackReason = z.infer<typeof AnswerFeedbackReasonSchema>;
+
+export const SubmitAnswerFeedbackRequestSchema = z.discriminatedUnion('rating', [
+  z.object({
+    rating: z.literal('helpful'),
+    comment: z.string().trim().max(1_000).nullable().optional(),
+  }),
+  z.object({
+    rating: z.literal('unhelpful'),
+    reason: AnswerFeedbackReasonSchema,
+    comment: z.string().trim().max(1_000).nullable().optional(),
+  }),
+]);
+export type SubmitAnswerFeedbackRequest = z.infer<typeof SubmitAnswerFeedbackRequestSchema>;
+
+export const SubmitAnswerFeedbackResponseSchema = z.object({
+  feedbackId: z.string().uuid(),
+  runId: z.string().uuid(),
+  rating: AnswerFeedbackRatingSchema,
+});
+export type SubmitAnswerFeedbackResponse = z.infer<typeof SubmitAnswerFeedbackResponseSchema>;
+
+export const AnswerFeedbackSummarySchema = z.object({
+  feedbackId: z.string().uuid(),
+  rating: AnswerFeedbackRatingSchema,
+  reason: AnswerFeedbackReasonSchema.nullable(),
+  comment: z.string().nullable(),
+  updatedAt: z.string().datetime(),
+});
+export type AnswerFeedbackSummary = z.infer<typeof AnswerFeedbackSummarySchema>;
+
 export const SearchGovernanceQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).default(7),
 });
@@ -685,6 +728,18 @@ export const QualityCostResponseSchema = z.object({
       }),
     ),
   }),
+  answerFeedback: z.object({
+    total: z.number().int().nonnegative(),
+    helpful: z.number().int().nonnegative(),
+    unhelpful: z.number().int().nonnegative(),
+    helpfulRate: z.number().min(0).max(1),
+    reasons: z.array(
+      z.object({
+        reason: AnswerFeedbackReasonSchema.nullable(),
+        count: z.number().int().positive(),
+      }),
+    ),
+  }),
   models: z.object({
     startedAt: z.string().datetime(),
     totalCalls: z.number().int().nonnegative(),
@@ -740,6 +795,37 @@ export const AnswerCitationSchema = z.object({
   source: SearchSourceSchema,
 });
 export type AnswerCitation = z.infer<typeof AnswerCitationSchema>;
+
+export const EvaluationCandidateQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(365).default(30),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+export type EvaluationCandidateQuery = z.infer<typeof EvaluationCandidateQuerySchema>;
+
+export const RagEvaluationCandidateSchema = z.object({
+  feedbackId: z.string().uuid(),
+  runId: z.string().uuid(),
+  question: z.string(),
+  observedAnswer: z.string(),
+  observedGrounded: z.boolean(),
+  model: z.string().nullable(),
+  degraded: z.boolean(),
+  degradationReason: z.string().nullable(),
+  reason: AnswerFeedbackReasonSchema.nullable(),
+  comment: z.string().nullable(),
+  citations: z.array(AnswerCitationSchema),
+  createdAt: z.string().datetime(),
+});
+export type RagEvaluationCandidate = z.infer<typeof RagEvaluationCandidateSchema>;
+
+export const RagEvaluationCandidateListResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  annotationRequired: z.literal(true),
+  items: z.array(RagEvaluationCandidateSchema),
+});
+export type RagEvaluationCandidateListResponse = z.infer<
+  typeof RagEvaluationCandidateListResponseSchema
+>;
 
 export const answerToolNames = [
   'search_document',
@@ -818,6 +904,7 @@ export const ConversationAnswerRunSchema = z.object({
   degraded: z.boolean(),
   degradationReason: z.string().nullable(),
   estimatedCostUsd: z.number().nonnegative(),
+  feedback: AnswerFeedbackSummarySchema.nullable(),
   startedAt: z.string().datetime(),
   completedAt: z.string().datetime().nullable(),
 });

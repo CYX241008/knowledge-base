@@ -7,6 +7,7 @@ import type {
   DeleteConversationResponse,
 } from '@knowledge-base/contracts';
 import {
+  AnswerFeedbackEntity,
   AnswerRunEntity,
   ChatCitationEntity,
   ChatConversationEntity,
@@ -45,6 +46,16 @@ export class ConversationsService {
       where: { tenantId: auth.tenantId, conversationId },
       order: { startedAt: 'ASC', id: 'ASC' },
     });
+    const feedback =
+      answerRuns.length === 0
+        ? []
+        : await this.dataSource.getRepository(AnswerFeedbackEntity).find({
+            where: {
+              tenantId: auth.tenantId,
+              userId: auth.userId,
+              answerRunId: In(answerRuns.map((run) => run.id)),
+            },
+          });
     const messageIds = messages.map((message) => message.id);
     const citations =
       messageIds.length === 0
@@ -68,6 +79,7 @@ export class ConversationsService {
       citationsByMessage.set(citation.messageId, current);
     }
     const runsByMessage = new Map<string, (typeof answerRuns)[number]>();
+    const feedbackByRun = new Map(feedback.map((item) => [item.answerRunId, item]));
     for (const run of answerRuns) {
       runsByMessage.set(run.userMessageId, run);
       if (run.assistantMessageId) runsByMessage.set(run.assistantMessageId, run);
@@ -76,6 +88,7 @@ export class ConversationsService {
       ...toSummary(conversation),
       messages: messages.map((message) => {
         const run = runsByMessage.get(message.id);
+        const runFeedback = run ? feedbackByRun.get(run.id) : undefined;
         return {
           id: message.id,
           role: message.role,
@@ -95,6 +108,15 @@ export class ConversationsService {
                 degraded: run.degraded,
                 degradationReason: run.degradationReason,
                 estimatedCostUsd: run.estimatedCostUsd,
+                feedback: runFeedback
+                  ? {
+                      feedbackId: runFeedback.id,
+                      rating: runFeedback.rating,
+                      reason: runFeedback.reason,
+                      comment: runFeedback.comment,
+                      updatedAt: runFeedback.updatedAt.toISOString(),
+                    }
+                  : null,
                 startedAt: run.startedAt.toISOString(),
                 completedAt: run.completedAt?.toISOString() ?? null,
               }

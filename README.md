@@ -104,6 +104,20 @@ pnpm e2e:rag
 pnpm eval:rag
 ```
 
+问答页支持对最终回答提交有用/无用反馈；无用反馈必须选择答案错误、引用错误、不完整、过时、幻觉或本应拒答等原因。知识治理页会单独汇总回答反馈。治理人员可以将最近的无用回答导出为匿名待标注评测候选：
+
+```bash
+pnpm eval:export-feedback -- --days=30 --limit=100
+```
+
+导出文件写入 `.tmp/rag-evaluations/`，包含真实问题、实际回答、实际引用和评测用例草稿。`expectedGrounded`、答案关键词及相关分片仍需人工标注，导出文件不能直接作为黄金评测集运行。
+
+答案反馈、历史恢复、治理汇总和评测候选导出的端到端验收：
+
+```bash
+pnpm e2e:answer-feedback
+```
+
 运行 PDF 类型、文本、表格、视觉描述和引用坐标专项评测：
 
 ```bash
@@ -168,9 +182,11 @@ pnpm e2e:document-review
 - `GET /api/admin/settings`：读取租户可调参数与部署级只读配置。
 - `PUT /api/admin/settings`：更新租户检索和审计保留参数并记录审计事件。
 - `GET /api/admin/audit`：按行为与资源类型分页读取租户审计日志。
-- `GET /api/admin/quality`：汇总检索、反馈及当前 API 实例的模型成本指标。
+- `GET /api/admin/quality`：汇总检索、搜索反馈、回答反馈及当前 API 实例的模型成本指标。
+- `GET /api/admin/evaluation-candidates`：导出无用回答及实际引用，供人工标注为真实评测用例。
 - `POST /api/answers`：生成并持久化带引用的知识库回答。
 - `POST /api/answers/stream`：以 SSE 输出回答元数据、token 和最终结果。
+- `POST /api/answers/:runId/feedback`：提交或更新当前用户对已完成回答的结构化反馈。
 - `GET /api/answers/conversations`：分页读取当前用户的会话。
 - `GET /api/answers/conversations/:conversationId`：读取消息与持久化引用。
 - `DELETE /api/answers/conversations/:conversationId`：删除当前用户拥有的会话。

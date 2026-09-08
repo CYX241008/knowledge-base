@@ -18,6 +18,8 @@ import {
   Send,
   ShieldAlert,
   Square,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   UploadCloud,
   X,
@@ -38,7 +40,11 @@ import {
   titleFromFilename,
   validateDocumentFile,
 } from '@/lib/document-upload';
-import type { DocumentResourcePermissionKey } from '@knowledge-base/contracts';
+import type {
+  AnswerFeedbackRating,
+  AnswerFeedbackReason,
+  DocumentResourcePermissionKey,
+} from '@knowledge-base/contracts';
 import { useAuthSession } from '@/components/auth-session-provider';
 
 const defaultTenantId = '11111111-1111-4111-8111-111111111111';
@@ -170,6 +176,13 @@ type ConversationAnswerRun = {
   assistantMessageId: string | null;
   status: AnswerRunStatus;
   errorCode: string | null;
+  feedback: {
+    feedbackId: string;
+    rating: AnswerFeedbackRating;
+    reason: AnswerFeedbackReason | null;
+    comment: string | null;
+    updatedAt: string;
+  } | null;
   startedAt: string;
   completedAt: string | null;
 };
@@ -251,9 +264,20 @@ export function DocumentWorkspace(): ReactElement {
   const [answerModel, setAnswerModel] = useState<string | null>(null);
   const [answerGrounded, setAnswerGrounded] = useState(false);
   const [answerCitations, setAnswerCitations] = useState<AnswerCitation[]>([]);
+  const [answerRunId, setAnswerRunId] = useState<string | null>(null);
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [answerStatus, setAnswerStatus] = useState<AnswerRunStatus | null>(null);
   const [answering, setAnswering] = useState(false);
+  const [answerFeedbackEnabled, setAnswerFeedbackEnabled] = useState(true);
+  const [answerFeedbackRating, setAnswerFeedbackRating] = useState<AnswerFeedbackRating | null>(
+    null,
+  );
+  const [answerFeedbackReason, setAnswerFeedbackReason] =
+    useState<AnswerFeedbackReason>('answer_incorrect');
+  const [answerFeedbackComment, setAnswerFeedbackComment] = useState('');
+  const [answerFeedbackDetailOpen, setAnswerFeedbackDetailOpen] = useState(false);
+  const [answerFeedbackBusy, setAnswerFeedbackBusy] = useState(false);
+  const [answerFeedbackError, setAnswerFeedbackError] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationBusy, setConversationBusy] = useState(false);
@@ -362,6 +386,12 @@ export function DocumentWorkspace(): ReactElement {
   useEffect(() => {
     void refreshConversations();
   }, [refreshConversations]);
+
+  useEffect(() => {
+    void requestApi<{ feedbackEnabled: boolean }>(`${apiBase}/search/preferences`)
+      .then((preferences) => setAnswerFeedbackEnabled(preferences.feedbackEnabled))
+      .catch(() => setAnswerFeedbackEnabled(false));
+  }, [apiBase]);
 
   const readyCount = useMemo(
     () => documents.filter((document) => document.currentReadyVersionId).length,
@@ -632,8 +662,14 @@ export function DocumentWorkspace(): ReactElement {
     setAnswerModel(null);
     setAnswerGrounded(false);
     setAnswerCitations([]);
+    setAnswerRunId(null);
     setAnswerError(null);
     setAnswerStatus('running');
+    setAnswerFeedbackRating(null);
+    setAnswerFeedbackReason('answer_incorrect');
+    setAnswerFeedbackComment('');
+    setAnswerFeedbackDetailOpen(false);
+    setAnswerFeedbackError(null);
     const abortController = new AbortController();
     answerAbortRef.current = abortController;
 
@@ -674,6 +710,7 @@ export function DocumentWorkspace(): ReactElement {
           throw new Error('message' in payload ? payload.message : '问答失败');
         if ('type' in payload && payload.type === 'meta') {
           setConversationId(payload.conversationId);
+          setAnswerRunId(payload.runId);
           setAnswerModel(payload.model);
           setAnswerCitations(payload.citations);
         } else if ('type' in payload && payload.type === 'token') {
@@ -681,6 +718,7 @@ export function DocumentWorkspace(): ReactElement {
         } else if ('type' in payload && payload.type === 'done') {
           completed = true;
           setConversationId(payload.response.conversationId);
+          setAnswerRunId(payload.response.runId);
           setAnswer(payload.response.answer);
           setAnswerModel(payload.response.model);
           setAnswerGrounded(payload.response.grounded);
@@ -715,6 +753,33 @@ export function DocumentWorkspace(): ReactElement {
     answerAbortRef.current?.abort();
   }
 
+  async function submitAnswerFeedback(rating: AnswerFeedbackRating): Promise<void> {
+    if (!answerRunId || answerFeedbackBusy) return;
+    setAnswerFeedbackBusy(true);
+    setAnswerFeedbackError(null);
+    try {
+      await requestApi(`${apiBase}/answers/${answerRunId}/feedback`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          rating,
+          ...(rating === 'unhelpful'
+            ? {
+                reason: answerFeedbackReason,
+                comment: answerFeedbackComment.trim() || null,
+              }
+            : {}),
+        }),
+      });
+      setAnswerFeedbackRating(rating);
+      setAnswerFeedbackDetailOpen(false);
+    } catch (error) {
+      setAnswerFeedbackError(errorMessage(error));
+    } finally {
+      setAnswerFeedbackBusy(false);
+    }
+  }
+
   function newConversation(): void {
     cancelAnswer();
     setCitationFocus(null);
@@ -726,8 +791,14 @@ export function DocumentWorkspace(): ReactElement {
     setAnswerModel(null);
     setAnswerGrounded(false);
     setAnswerCitations([]);
+    setAnswerRunId(null);
     setAnswerError(null);
     setAnswerStatus(null);
+    setAnswerFeedbackRating(null);
+    setAnswerFeedbackReason('answer_incorrect');
+    setAnswerFeedbackComment('');
+    setAnswerFeedbackDetailOpen(false);
+    setAnswerFeedbackError(null);
     setQuestion('');
   }
 
@@ -760,7 +831,13 @@ export function DocumentWorkspace(): ReactElement {
       setAnswerModel(latestAssistant?.model ?? null);
       setAnswerGrounded((latestAssistant?.citations.length ?? 0) > 0);
       setAnswerCitations(latestAssistant?.citations ?? []);
+      setAnswerRunId(latestRun?.id ?? null);
       setAnswerStatus(latestRun?.status ?? (latestAssistant ? 'completed' : null));
+      setAnswerFeedbackRating(latestRun?.feedback?.rating ?? null);
+      setAnswerFeedbackReason(latestRun?.feedback?.reason ?? 'answer_incorrect');
+      setAnswerFeedbackComment(latestRun?.feedback?.comment ?? '');
+      setAnswerFeedbackDetailOpen(false);
+      setAnswerFeedbackError(null);
       setAnswerError(
         answerRunMessage(latestRun) ??
           (latestUser && !latestAssistant ? '该问题没有已保存的回答，可以重新提交该问题' : null),
@@ -978,6 +1055,83 @@ export function DocumentWorkspace(): ReactElement {
               </span>
             )}
             {answerError ? <p className="answer-error">{answerError}</p> : null}
+            {answerStatus === 'completed' && answerRunId && answerFeedbackEnabled ? (
+              <>
+                <div className="answer-feedback-actions" aria-label="回答质量反馈">
+                  <span>{answerFeedbackRating ? '反馈已记录' : '回答有用吗'}</span>
+                  <button
+                    aria-label="回答有用"
+                    aria-pressed={answerFeedbackRating === 'helpful'}
+                    className={answerFeedbackRating === 'helpful' ? 'active' : ''}
+                    disabled={answerFeedbackBusy}
+                    onClick={() => void submitAnswerFeedback('helpful')}
+                    title="回答有用"
+                    type="button"
+                  >
+                    <ThumbsUp size={15} />
+                  </button>
+                  <button
+                    aria-label="回答无用"
+                    aria-pressed={answerFeedbackRating === 'unhelpful'}
+                    className={answerFeedbackRating === 'unhelpful' ? 'active' : ''}
+                    disabled={answerFeedbackBusy}
+                    onClick={() => setAnswerFeedbackDetailOpen(true)}
+                    title="回答无用"
+                    type="button"
+                  >
+                    <ThumbsDown size={15} />
+                  </button>
+                </div>
+                {answerFeedbackDetailOpen ? (
+                  <div className="answer-feedback-detail">
+                    <label>
+                      <span>主要原因</span>
+                      <select
+                        onChange={(event) =>
+                          setAnswerFeedbackReason(event.target.value as AnswerFeedbackReason)
+                        }
+                        value={answerFeedbackReason}
+                      >
+                        <option value="answer_incorrect">答案不正确</option>
+                        <option value="citation_incorrect">引用不支持答案</option>
+                        <option value="incomplete">回答不完整</option>
+                        <option value="outdated">内容已过时</option>
+                        <option value="hallucinated">包含知识库外信息</option>
+                        <option value="should_have_refused">本应拒绝回答</option>
+                        <option value="other">其他</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>补充说明</span>
+                      <input
+                        maxLength={1000}
+                        onChange={(event) => setAnswerFeedbackComment(event.target.value)}
+                        placeholder="可选"
+                        value={answerFeedbackComment}
+                      />
+                    </label>
+                    <Button
+                      disabled={answerFeedbackBusy}
+                      onClick={() => void submitAnswerFeedback('unhelpful')}
+                    >
+                      {answerFeedbackBusy ? <LoaderCircle className="spinning" size={15} /> : null}
+                      提交反馈
+                    </Button>
+                    <button
+                      className="answer-feedback-cancel"
+                      disabled={answerFeedbackBusy}
+                      onClick={() => setAnswerFeedbackDetailOpen(false)}
+                      type="button"
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : null}
+                {answerFeedbackError ? (
+                  <p className="answer-feedback-error">{answerFeedbackError}</p>
+                ) : null}
+              </>
+            ) : null}
           </div>
           <aside className="citation-list" aria-label="回答证据">
             <strong>证据 {answerCitations.length > 0 ? answerCitations.length : ''}</strong>

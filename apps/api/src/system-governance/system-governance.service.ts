@@ -3,9 +3,13 @@ import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nest
 import { ConfigService } from '@nestjs/config';
 import type { ServerEnv } from '@knowledge-base/config';
 import type {
+  AnswerCitation,
+  AnswerFeedbackReason,
   AuditEventListResponse,
   AuditEventQuery,
+  EvaluationCandidateQuery,
   QualityCostResponse,
+  RagEvaluationCandidateListResponse,
   SearchPreferencesResponse,
   SubmitSearchFeedbackRequest,
   SubmitSearchFeedbackResponse,
@@ -16,6 +20,7 @@ import type {
 import {
   AppUserEntity,
   AuditEventEntity,
+  ChatCitationEntity,
   SearchFeedbackEntity,
   SearchQueryEventEntity,
   TenantSystemSettingEntity,
@@ -248,49 +253,70 @@ export class SystemGovernanceService {
 
   async quality(auth: AuthContext, days: number): Promise<QualityCostResponse> {
     this.accessControl.assertGovernanceRead(auth);
-    const [searchRows, feedbackRows, reasonRows] = await Promise.all([
-      this.dataSource.query<
-        Array<{
-          totalQueries: string;
-          zeroResultQueries: string;
-          averageDurationMs: string | null;
-          averageResultCount: string | null;
-        }>
-      >(
-        `SELECT COUNT(*) AS "totalQueries",
+    const [searchRows, feedbackRows, reasonRows, answerFeedbackRows, answerReasonRows] =
+      await Promise.all([
+        this.dataSource.query<
+          Array<{
+            totalQueries: string;
+            zeroResultQueries: string;
+            averageDurationMs: string | null;
+            averageResultCount: string | null;
+          }>
+        >(
+          `SELECT COUNT(*) AS "totalQueries",
                 COUNT(*) FILTER (WHERE status = 'success' AND result_count = 0) AS "zeroResultQueries",
                 AVG(duration_ms) AS "averageDurationMs",
                 AVG(result_count) FILTER (WHERE status = 'success') AS "averageResultCount"
          FROM search_query_event
          WHERE tenant_id = $1 AND created_at >= now() - make_interval(days => $2)`,
-        [auth.tenantId, days],
-      ),
-      this.dataSource.query<Array<{ total: string; helpful: string; unhelpful: string }>>(
-        `SELECT COUNT(*) AS total,
+          [auth.tenantId, days],
+        ),
+        this.dataSource.query<Array<{ total: string; helpful: string; unhelpful: string }>>(
+          `SELECT COUNT(*) AS total,
                 COUNT(*) FILTER (WHERE rating = 'helpful') AS helpful,
                 COUNT(*) FILTER (WHERE rating = 'unhelpful') AS unhelpful
          FROM search_feedback
          WHERE tenant_id = $1 AND created_at >= now() - make_interval(days => $2)`,
-        [auth.tenantId, days],
-      ),
-      this.dataSource.query<
-        Array<{ reason: SubmitSearchFeedbackRequest['reason']; count: number }>
-      >(
-        `SELECT reason, COUNT(*)::int AS count
+          [auth.tenantId, days],
+        ),
+        this.dataSource.query<
+          Array<{ reason: SubmitSearchFeedbackRequest['reason']; count: number }>
+        >(
+          `SELECT reason, COUNT(*)::int AS count
          FROM search_feedback
          WHERE tenant_id = $1
            AND rating = 'unhelpful'
            AND created_at >= now() - make_interval(days => $2)
          GROUP BY reason ORDER BY count DESC`,
-        [auth.tenantId, days],
-      ),
-    ]);
+          [auth.tenantId, days],
+        ),
+        this.dataSource.query<Array<{ total: string; helpful: string; unhelpful: string }>>(
+          `SELECT COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE rating = 'helpful') AS helpful,
+                COUNT(*) FILTER (WHERE rating = 'unhelpful') AS unhelpful
+         FROM answer_feedback
+         WHERE tenant_id = $1 AND created_at >= now() - make_interval(days => $2)`,
+          [auth.tenantId, days],
+        ),
+        this.dataSource.query<Array<{ reason: AnswerFeedbackReason | null; count: number }>>(
+          `SELECT reason, COUNT(*)::int AS count
+         FROM answer_feedback
+         WHERE tenant_id = $1
+           AND rating = 'unhelpful'
+           AND created_at >= now() - make_interval(days => $2)
+         GROUP BY reason ORDER BY count DESC`,
+          [auth.tenantId, days],
+        ),
+      ]);
     const search = searchRows[0];
     const feedback = feedbackRows[0];
+    const answerFeedback = answerFeedbackRows[0];
     const totalQueries = Number(search?.totalQueries ?? 0);
     const zeroResultQueries = Number(search?.zeroResultQueries ?? 0);
     const feedbackTotal = Number(feedback?.total ?? 0);
     const helpful = Number(feedback?.helpful ?? 0);
+    const answerFeedbackTotal = Number(answerFeedback?.total ?? 0);
+    const helpfulAnswers = Number(answerFeedback?.helpful ?? 0);
     const modelSnapshot = await this.modelMetrics.usageForTenant(auth.tenantId, days);
     const budget = await this.modelBudget.status(auth.tenantId);
     const operations = modelSnapshot.operations.map((operation) => ({
@@ -319,6 +345,16 @@ export class SystemGovernanceService {
         unhelpful: Number(feedback?.unhelpful ?? 0),
         helpfulRate: feedbackTotal ? round(helpful / feedbackTotal, 4) : 0,
         reasons: reasonRows.map((item) => ({
+          reason: item.reason ?? null,
+          count: Number(item.count),
+        })),
+      },
+      answerFeedback: {
+        total: answerFeedbackTotal,
+        helpful: helpfulAnswers,
+        unhelpful: Number(answerFeedback?.unhelpful ?? 0),
+        helpfulRate: answerFeedbackTotal ? round(helpfulAnswers / answerFeedbackTotal, 4) : 0,
+        reasons: answerReasonRows.map((item) => ({
           reason: item.reason ?? null,
           count: Number(item.count),
         })),
@@ -357,6 +393,100 @@ export class SystemGovernanceService {
         },
         operations,
       },
+    };
+  }
+
+  async evaluationCandidates(
+    auth: AuthContext,
+    query: EvaluationCandidateQuery,
+  ): Promise<RagEvaluationCandidateListResponse> {
+    this.accessControl.assertGovernanceRead(auth);
+    const rows = await this.dataSource.query<
+      Array<{
+        feedbackId: string;
+        runId: string;
+        question: string;
+        observedAnswer: string;
+        model: string | null;
+        degraded: boolean;
+        degradationReason: string | null;
+        reason: AnswerFeedbackReason | null;
+        comment: string | null;
+        assistantMessageId: string;
+        createdAt: Date | string;
+      }>
+    >(
+      `SELECT feedback.id AS "feedbackId",
+              run.id AS "runId",
+              question.content AS question,
+              answer.content AS "observedAnswer",
+              run.actual_model AS model,
+              run.degraded,
+              run.degradation_reason AS "degradationReason",
+              feedback.reason,
+              feedback.comment,
+              run.assistant_message_id AS "assistantMessageId",
+              feedback.updated_at AS "createdAt"
+       FROM answer_feedback feedback
+       INNER JOIN answer_run run
+         ON run.id = feedback.answer_run_id
+        AND run.tenant_id = feedback.tenant_id
+       INNER JOIN chat_message question ON question.id = run.user_message_id
+       INNER JOIN chat_message answer ON answer.id = run.assistant_message_id
+       WHERE feedback.tenant_id = $1
+         AND feedback.rating = 'unhelpful'
+         AND feedback.updated_at >= now() - make_interval(days => $2)
+       ORDER BY feedback.updated_at DESC, feedback.id DESC
+       LIMIT $3`,
+      [auth.tenantId, query.days, query.limit],
+    );
+    const citations =
+      rows.length === 0
+        ? []
+        : await this.dataSource.getRepository(ChatCitationEntity).find({
+            where: {
+              tenantId: auth.tenantId,
+              messageId: In(rows.map((row) => row.assistantMessageId)),
+            },
+            order: { messageId: 'ASC', ordinal: 'ASC' },
+          });
+    const citationsByMessage = new Map<string, typeof citations>();
+    for (const citation of citations) {
+      const items = citationsByMessage.get(citation.messageId) ?? [];
+      items.push(citation);
+      citationsByMessage.set(citation.messageId, items);
+    }
+    return {
+      generatedAt: new Date().toISOString(),
+      annotationRequired: true,
+      items: rows.map((row) => {
+        const answerCitations = citationsByMessage.get(row.assistantMessageId) ?? [];
+        return {
+          feedbackId: row.feedbackId,
+          runId: row.runId,
+          question: row.question,
+          observedAnswer: row.observedAnswer,
+          observedGrounded: answerCitations.length > 0,
+          model: row.model,
+          degraded: row.degraded,
+          degradationReason: row.degradationReason,
+          reason: row.reason,
+          comment: row.comment,
+          citations: answerCitations.map((citation) => ({
+            ordinal: citation.ordinal,
+            chunkId: citation.chunkId,
+            documentId: citation.documentId,
+            documentVersionId: citation.documentVersionId,
+            title: citation.documentTitle,
+            excerpt: citation.excerpt,
+            source: citation.source as AnswerCitation['source'],
+          })),
+          createdAt:
+            row.createdAt instanceof Date
+              ? row.createdAt.toISOString()
+              : new Date(row.createdAt).toISOString(),
+        };
+      }),
     };
   }
 

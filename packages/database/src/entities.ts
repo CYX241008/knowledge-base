@@ -2,6 +2,8 @@ import type {
   AccessPermissionKey,
   AccessPermissionScope,
   AccessPrincipalType,
+  AnswerFeedbackRating,
+  AnswerFeedbackReason,
   AnswerRunStatus,
   DocumentStatus,
   DocumentReviewAction,
@@ -1200,6 +1202,39 @@ export class AnswerRunEntity {
   completedAt!: Date | null;
 }
 
+@Entity('answer_feedback')
+@Index(['tenantId', 'createdAt'])
+@Index(['tenantId', 'rating', 'createdAt'])
+@Index(['tenantId', 'answerRunId', 'userId'], { unique: true })
+export class AnswerFeedbackEntity {
+  @PrimaryColumn('uuid')
+  id!: string;
+
+  @Column('uuid', { name: 'tenant_id' })
+  tenantId!: string;
+
+  @Column('uuid', { name: 'answer_run_id' })
+  answerRunId!: string;
+
+  @Column('uuid', { name: 'user_id' })
+  userId!: string;
+
+  @Column('varchar', { length: 16 })
+  rating!: AnswerFeedbackRating;
+
+  @Column('varchar', { length: 32, nullable: true })
+  reason!: AnswerFeedbackReason | null;
+
+  @Column('text', { nullable: true })
+  comment!: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt!: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt!: Date;
+}
+
 @Entity('document_processing_metric')
 @Index(['tenantId', 'documentVersionId', 'createdAt'])
 export class DocumentProcessingMetricEntity {
@@ -1456,6 +1491,7 @@ export const databaseEntities = [
   ModelUsageEventEntity,
   DocumentProcessingMetricEntity,
   AnswerRunEntity,
+  AnswerFeedbackEntity,
   ModelBudgetAlertEntity,
   IngestionJobEntity,
   IngestionStageEntity,

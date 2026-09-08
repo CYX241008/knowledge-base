@@ -14,6 +14,7 @@ import {
 import {
   AskQuestionRequestSchema,
   ConversationQuerySchema,
+  SubmitAnswerFeedbackRequestSchema,
   buildSuccess,
   type ApiResponse,
   type AskQuestionResponse,
@@ -28,6 +29,7 @@ import { CurrentAuth } from '../auth/current-auth.decorator';
 import { parseRequest } from '../common/validation';
 import { AnswersService } from './answers.service';
 import { ConversationsService } from './conversations.service';
+import { AnswerFeedbackService } from './answer-feedback.service';
 
 type StreamingResponse = {
   setHeader(name: string, value: string): void;
@@ -46,6 +48,8 @@ export class AnswersController {
   constructor(
     @Inject(AnswersService) private readonly answersService: AnswersService,
     @Inject(ConversationsService) private readonly conversationsService: ConversationsService,
+    @Inject(AnswerFeedbackService)
+    private readonly answerFeedbackService: AnswerFeedbackService,
     @Inject(AccessControlService) private readonly accessControl: AccessControlService,
   ) {}
 
@@ -120,5 +124,20 @@ export class AnswersController {
       response.off('close', handleClose);
       if (!response.writableEnded && !response.destroyed) response.end();
     }
+  }
+
+  @Post(':runId/feedback')
+  async submitFeedback(
+    @Param('runId') runId: string,
+    @Body() body: unknown,
+    @CurrentAuth() auth: AuthContext,
+  ) {
+    return buildSuccess(
+      await this.answerFeedbackService.submit(
+        auth,
+        runId,
+        parseRequest(SubmitAnswerFeedbackRequestSchema, body),
+      ),
+    );
   }
 }

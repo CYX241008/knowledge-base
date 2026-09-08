@@ -1,12 +1,14 @@
 import { Body, Controller, Get, Inject, Put, Query, UseGuards } from '@nestjs/common';
 import {
   AuditEventQuerySchema,
+  EvaluationCandidateQuerySchema,
   QualityGovernanceQuerySchema,
   UpdateSystemSettingsRequestSchema,
   buildSuccess,
   type ApiResponse,
   type AuditEventListResponse,
   type QualityCostResponse,
+  type RagEvaluationCandidateListResponse,
   type SystemSettingsResponse,
 } from '@knowledge-base/contracts';
 import type { AuthContext } from '../auth/auth-context';
@@ -57,5 +59,18 @@ export class SystemGovernanceController {
   ): Promise<ApiResponse<QualityCostResponse>> {
     const input = parseRequest(QualityGovernanceQuerySchema, query);
     return buildSuccess(await this.governance.quality(auth, input.days));
+  }
+
+  @Get('evaluation-candidates')
+  async evaluationCandidates(
+    @Query() query: unknown,
+    @CurrentAuth() auth: AuthContext,
+  ): Promise<ApiResponse<RagEvaluationCandidateListResponse>> {
+    return buildSuccess(
+      await this.governance.evaluationCandidates(
+        auth,
+        parseRequest(EvaluationCandidateQuerySchema, query),
+      ),
+    );
   }
 }
