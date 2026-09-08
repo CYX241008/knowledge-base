@@ -117,6 +117,7 @@ export class SystemGovernanceService {
         rerankerModel: this.config.getOrThrow('RERANKER_MODEL'),
         mmrLambda: this.config.getOrThrow('RAG_MMR_LAMBDA'),
         nearDuplicateThreshold: this.config.getOrThrow('RAG_NEAR_DUPLICATE_THRESHOLD'),
+        queryPlanningEnabled: this.config.getOrThrow('RAG_QUERY_PLANNING_ENABLED'),
         modelRequestTimeoutMs: this.config.getOrThrow('MODEL_REQUEST_TIMEOUT_MS'),
         modelRequestsPerMinute: this.config.getOrThrow('MODEL_REQUESTS_PER_MINUTE'),
         modelGlobalTokensPerMinute: this.config.getOrThrow('MODEL_GLOBAL_TOKENS_PER_MINUTE'),

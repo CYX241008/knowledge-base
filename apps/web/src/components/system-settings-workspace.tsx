@@ -530,6 +530,7 @@ function RuntimeTable({ runtime }: { runtime: SystemRuntimeConfiguration }): Rea
     ['重排服务', `${runtime.rerankerProvider} / ${runtime.rerankerModel}`],
     ['MMR 相关性权重', runtime.mmrLambda.toString()],
     ['近重复相似度阈值', runtime.nearDuplicateThreshold.toString()],
+    ['查询规划', runtime.queryPlanningEnabled ? '已启用' : '已停用'],
     ['问答相关性阈值', runtime.ragMinRelevance.toString()],
     ['模型超时', `${runtime.modelRequestTimeoutMs.toLocaleString('zh-CN')} ms`],
     ['请求限额', formatQuota(runtime.modelRequestsPerMinute, '次/分钟')],

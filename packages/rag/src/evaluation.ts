@@ -56,6 +56,23 @@ export type RagEvaluationStage = (typeof RAG_EVALUATION_STAGES)[number];
 
 export type RagEvaluationRetrievalDiagnostics = {
   candidateLimit: number;
+  queryPlan?: {
+    version: 'query-planner-v1';
+    enabled: boolean;
+    intent: 'exact' | 'fact' | 'comparison' | 'analysis';
+    variants: Array<{
+      text: string;
+      kind: 'original' | 'normalized' | 'keyword' | 'subquery' | 'exact';
+      weight: number;
+      useVector: boolean;
+    }>;
+    baseCandidateLimit: number;
+    candidateLimit: number;
+    requestedResultLimit: number;
+    resultLimit: number;
+    keywordWeight: number;
+    vectorWeight: number;
+  };
   scoreThreshold: number;
   mmrLambda: number;
   nearDuplicateThreshold: number;
@@ -148,6 +165,7 @@ export type RagEvaluationCaseResult = {
   estimatedCostUsd: number;
   retrieval?: {
     candidateLimit: number;
+    queryPlan?: RagEvaluationRetrievalDiagnostics['queryPlan'];
     scoreThreshold: number;
     mmrLambda: number;
     nearDuplicateThreshold: number;
@@ -364,6 +382,7 @@ function evaluateCase(
       ? {
           retrieval: {
             candidateLimit: observation.retrievalDiagnostics.candidateLimit,
+            queryPlan: observation.retrievalDiagnostics.queryPlan,
             scoreThreshold: observation.retrievalDiagnostics.scoreThreshold,
             mmrLambda: observation.retrievalDiagnostics.mmrLambda,
             nearDuplicateThreshold: observation.retrievalDiagnostics.nearDuplicateThreshold,

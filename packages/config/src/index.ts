@@ -120,6 +120,7 @@ const ServerEnvSchema = z
     PDF_VISION_REQUIRED_FOR_MIXED_PAGES: booleanFromEnv.default(false),
     PDF_QUALITY_MIN_SCORE: z.coerce.number().int().min(0).max(100).default(75),
     RAG_CONTEXTUAL_RETRIEVAL_ENABLED: booleanFromEnv.default(true),
+    RAG_QUERY_PLANNING_ENABLED: booleanFromEnv.default(true),
     CHAT_MODEL: z.string().trim().min(1).default('local-extractive-v1'),
     CHAT_FALLBACK_MODEL: z.string().trim().min(1).optional(),
     CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(128_000).default(1_500),

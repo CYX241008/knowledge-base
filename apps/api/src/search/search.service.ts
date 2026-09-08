@@ -44,8 +44,10 @@ import {
   consolidateSearchCandidates,
   type CandidateConsolidationStats,
 } from './candidate-consolidation';
+import { planRetrievalQuery, type RetrievalQueryPlan } from './query-planning';
 
 type RankedChunk = { id: string; score: number };
+type WeightedRanking = { hits: RankedChunk[]; weight: number };
 
 type RerankPreparationStats = {
   inputCandidates: number;
@@ -193,7 +195,14 @@ export class SearchService {
           auditRetentionDays: 365,
         };
     timingsMs.settings = Date.now() - settingsStartedAt;
-    const candidateLimit = settings.candidateLimit;
+    const queryPlan = planRetrievalQuery(input.text, {
+      baseCandidateLimit: settings.candidateLimit,
+      requestedResultLimit: input.limit,
+      source: input.source,
+      enabled: this.config.getOrThrow('RAG_QUERY_PLANNING_ENABLED'),
+    });
+    const candidateLimit = queryPlan.candidateLimit;
+    const resultLimit = queryPlan.resultLimit;
     const mmrLambda = this.config.getOrThrow('RAG_MMR_LAMBDA');
     const nearDuplicateThreshold = this.config.getOrThrow('RAG_NEAR_DUPLICATE_THRESHOLD');
     let vectorCandidateCount = 0;
@@ -201,22 +210,42 @@ export class SearchService {
     try {
       const keywordStartedAt = Date.now();
       const keywordPromise = this.keywordIndex
-        .search(input.tenantId, input.principalIds, input.text, candidateLimit, {
-          spaceId: input.spaceId,
-          folderId: input.folderId,
-          tagIds: input.tagIds,
-        })
+        .searchMany(
+          input.tenantId,
+          input.principalIds,
+          queryPlan.variants.map((variant) => variant.text),
+          candidateLimit,
+          {
+            spaceId: input.spaceId,
+            folderId: input.folderId,
+            tagIds: input.tagIds,
+          },
+        )
+        .then((rankings) =>
+          weightedReciprocalRankFusion(
+            rankings.map((hits, index) => ({
+              hits,
+              weight: queryPlan.variants[index]?.weight ?? 1,
+            })),
+          ),
+        )
         .finally(() => {
           timingsMs.keyword = Date.now() - keywordStartedAt;
         });
+      const vectorVariants = queryPlan.variants.filter((variant) => variant.useVector);
       const embeddingAssessment = await this.modelBudget?.assess({
         tenantId: input.tenantId,
         operation: 'embedding',
         model: this.embeddingModel,
-        inputTokens: countModelTextTokens(
-          this.embeddingModel,
-          input.text,
-          this.config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
+        inputTokens: vectorVariants.reduce(
+          (total, variant) =>
+            total +
+            countModelTextTokens(
+              this.embeddingModel,
+              variant.text,
+              this.config.getOrThrow('MODEL_TOKENIZER_ENCODING'),
+            ),
+          0,
         ),
         maxOutputTokens: 0,
       });
@@ -224,77 +253,48 @@ export class SearchService {
         throw new ModelBudgetExceededError(embeddingAssessment);
       }
       let vectorHits: RankedChunk[] = [];
-      if (embeddingAssessment?.mode !== 'degrade') {
+      if (embeddingAssessment?.mode !== 'degrade' && vectorVariants.length > 0) {
         const embeddingStartedAt = Date.now();
-        const [queryVector] = await this.embedding.embed({
+        const queryVectors = await this.embedding.embed({
           model: this.embeddingModel,
-          inputs: [input.text],
+          inputs: vectorVariants.map((variant) => variant.text),
           dimensions: this.config.getOrThrow('EMBEDDING_DIMENSIONS'),
           signal: input.signal,
           context: modelCallContext(input),
         });
         timingsMs.embedding = Date.now() - embeddingStartedAt;
-        if (!queryVector) throw new Error('Embedding model returned no query vector');
-        const vectorLiteral = `[${queryVector.join(',')}]`;
+        if (queryVectors.length !== vectorVariants.length) {
+          throw new Error('Embedding model returned an unexpected query vector count');
+        }
         const vectorStartedAt = Date.now();
-        vectorHits = await this.dataSource
-          .query<RankedChunk[]>(
-            `
-          SELECT chunk.id,
-                 1 - (chunk.embedding <=> $1::vector) AS score
-          FROM document_chunk chunk
-          INNER JOIN document ON document.id = chunk.document_id
-          WHERE chunk.tenant_id = $2::uuid
-            AND chunk.principal_ids && $3::varchar[]
-            AND chunk.embedding_model = $8
-            AND document.deleted_at IS NULL
-            AND document.status = 'published'
-            AND document.current_ready_version_id = chunk.document_version_id
-            AND ($5::uuid IS NULL OR document.space_id = $5::uuid)
-            AND ($6::uuid IS NULL OR document.folder_id = $6::uuid)
-            AND (
-              COALESCE(cardinality($7::uuid[]), 0) = 0
-              OR (
-                SELECT COUNT(DISTINCT tagged.tag_id)
-                FROM document_tag tagged
-                WHERE tagged.tenant_id = document.tenant_id
-                  AND tagged.document_id = document.id
-                  AND tagged.tag_id = ANY($7::uuid[])
-              ) = cardinality($7::uuid[])
-            )
-          ORDER BY chunk.embedding <=> $1::vector
-          LIMIT $4
-          `,
-            [
-              vectorLiteral,
-              input.tenantId,
-              input.principalIds,
-              candidateLimit,
-              input.spaceId ?? null,
-              input.folderId ?? null,
-              input.tagIds ?? [],
-              this.embeddingModel,
-            ],
-          )
-          .finally(() => {
-            timingsMs.vector = Date.now() - vectorStartedAt;
-          });
+        const vectorRankings = await Promise.all(
+          queryVectors.map(async (queryVector, index) => ({
+            hits: await this.vectorSearch(input, queryVector, candidateLimit),
+            weight: vectorVariants[index]?.weight ?? 1,
+          })),
+        );
+        vectorHits = weightedReciprocalRankFusion(vectorRankings);
+        timingsMs.vector = Date.now() - vectorStartedAt;
       }
       const keywordHits = await keywordPromise;
       vectorCandidateCount = vectorHits.length;
       keywordCandidateCount = keywordHits.length;
       const fusionStartedAt = Date.now();
-      const fused = reciprocalRankFusion([vectorHits, keywordHits]);
+      const fused = weightedReciprocalRankFusion([
+        { hits: vectorHits, weight: queryPlan.vectorWeight },
+        { hits: keywordHits, weight: queryPlan.keywordWeight },
+      ]);
       const fusedCandidates = fused.slice(0, candidateLimit);
       timingsMs.fusion = Date.now() - fusionStartedAt;
       const candidateIds = fusedCandidates.map((hit) => hit.id);
       if (candidateIds.length === 0) {
         const durationMs = Date.now() - startedAt;
         timingsMs.total = durationMs;
-        const response = this.emptyResponse(input, durationMs);
+        const response = this.emptyResponse(input, durationMs, resultLimit);
         if (input.includeDiagnostics) {
           response.diagnostics = buildDiagnostics(
             candidateLimit,
+            queryPlan,
             settings.scoreThreshold,
             mmrLambda,
             nearDuplicateThreshold,
@@ -318,6 +318,7 @@ export class SearchService {
             0,
             0,
             'success',
+            queryPlan,
           );
         }
         return response;
@@ -478,7 +479,7 @@ export class SearchService {
       consolidation.stats.exactDuplicatesRemoved += rerankPreparation.stats.exactDuplicatesRemoved;
       timingsMs.consolidation = Date.now() - consolidationStartedAt;
       const mmrStartedAt = Date.now();
-      const offset = (input.page - 1) * input.limit;
+      const offset = (input.page - 1) * resultLimit;
       const rankedHits = maximalMarginalRelevance(
         consolidation.candidates.map((candidate) => ({
           id: candidate.hit.chunkId,
@@ -486,7 +487,7 @@ export class SearchService {
           embedding: candidate.embedding,
           hit: candidate.hit,
         })),
-        { lambda: mmrLambda, limit: offset + input.limit },
+        { lambda: mmrLambda, limit: offset + resultLimit },
       ).map((candidate) => candidate.hit);
       timingsMs.mmr = Date.now() - mmrStartedAt;
       const durationMs = Date.now() - startedAt;
@@ -496,16 +497,17 @@ export class SearchService {
       const response: SearchDocumentsResponse = {
         queryEventId: null,
         query: input.text,
-        hits: rankedHits.slice(offset, offset + input.limit),
+        hits: rankedHits.slice(offset, offset + resultLimit),
         total: consolidation.candidates.length,
         page: input.page,
-        pageSize: input.limit,
+        pageSize: resultLimit,
         durationMs,
         facets: buildFacets(candidateRows),
       };
       if (input.includeDiagnostics) {
         response.diagnostics = buildDiagnostics(
           candidateLimit,
+          queryPlan,
           settings.scoreThreshold,
           mmrLambda,
           nearDuplicateThreshold,
@@ -529,6 +531,7 @@ export class SearchService {
           vectorCandidateCount,
           keywordCandidateCount,
           'success',
+          queryPlan,
         );
       }
       return response;
@@ -541,11 +544,58 @@ export class SearchService {
           vectorCandidateCount,
           keywordCandidateCount,
           'failed',
+          queryPlan,
           errorCode(error),
         );
       }
       throw error;
     }
+  }
+
+  private async vectorSearch(
+    input: SearchCommand,
+    queryVector: number[],
+    candidateLimit: number,
+  ): Promise<RankedChunk[]> {
+    const vectorLiteral = `[${queryVector.join(',')}]`;
+    return this.dataSource.query<RankedChunk[]>(
+      `
+      SELECT chunk.id,
+             1 - (chunk.embedding <=> $1::vector) AS score
+      FROM document_chunk chunk
+      INNER JOIN document ON document.id = chunk.document_id
+      WHERE chunk.tenant_id = $2::uuid
+        AND chunk.principal_ids && $3::varchar[]
+        AND chunk.embedding_model = $8
+        AND document.deleted_at IS NULL
+        AND document.status = 'published'
+        AND document.current_ready_version_id = chunk.document_version_id
+        AND ($5::uuid IS NULL OR document.space_id = $5::uuid)
+        AND ($6::uuid IS NULL OR document.folder_id = $6::uuid)
+        AND (
+          COALESCE(cardinality($7::uuid[]), 0) = 0
+          OR (
+            SELECT COUNT(DISTINCT tagged.tag_id)
+            FROM document_tag tagged
+            WHERE tagged.tenant_id = document.tenant_id
+              AND tagged.document_id = document.id
+              AND tagged.tag_id = ANY($7::uuid[])
+          ) = cardinality($7::uuid[])
+        )
+      ORDER BY chunk.embedding <=> $1::vector
+      LIMIT $4
+      `,
+      [
+        vectorLiteral,
+        input.tenantId,
+        input.principalIds,
+        candidateLimit,
+        input.spaceId ?? null,
+        input.folderId ?? null,
+        input.tagIds ?? [],
+        this.embeddingModel,
+      ],
+    );
   }
 
   async source(input: {
@@ -669,14 +719,18 @@ export class SearchService {
     };
   }
 
-  private emptyResponse(input: SearchCommand, durationMs: number): SearchDocumentsResponse {
+  private emptyResponse(
+    input: SearchCommand,
+    durationMs: number,
+    resultLimit: number,
+  ): SearchDocumentsResponse {
     return {
       queryEventId: null,
       query: input.text,
       hits: [],
       total: 0,
       page: input.page,
-      pageSize: input.limit,
+      pageSize: resultLimit,
       durationMs,
       facets: { spaces: [], folders: [], tags: [] },
     };
@@ -689,6 +743,7 @@ export class SearchService {
     vectorCandidateCount: number,
     keywordCandidateCount: number,
     status: 'success' | 'failed',
+    queryPlan: RetrievalQueryPlan,
     failureCode: string | null = null,
   ): Promise<string | null> {
     const id = randomUUID();
@@ -704,7 +759,19 @@ export class SearchService {
           folderId: input.folderId ?? null,
           tagIds: input.tagIds ?? [],
           page: input.page,
-          pageSize: input.limit,
+          pageSize: queryPlan.resultLimit,
+          queryPlan: {
+            version: queryPlan.version,
+            enabled: queryPlan.enabled,
+            intent: queryPlan.intent,
+            variants: queryPlan.variants,
+            baseCandidateLimit: queryPlan.baseCandidateLimit,
+            candidateLimit: queryPlan.candidateLimit,
+            requestedResultLimit: queryPlan.requestedResultLimit,
+            resultLimit: queryPlan.resultLimit,
+            keywordWeight: queryPlan.keywordWeight,
+            vectorWeight: queryPlan.vectorWeight,
+          },
         },
         resultCount,
         durationMs,
@@ -838,6 +905,7 @@ function hydrateRankedHits(
 
 function buildDiagnostics(
   candidateLimit: number,
+  queryPlan: RetrievalQueryPlan,
   scoreThreshold: number,
   mmrLambda: number,
   nearDuplicateThreshold: number,
@@ -858,6 +926,7 @@ function buildDiagnostics(
   });
   return {
     candidateLimit,
+    queryPlan,
     scoreThreshold,
     mmrLambda,
     nearDuplicateThreshold,
@@ -998,10 +1067,21 @@ export function prepareRerankCandidates(
 }
 
 export function reciprocalRankFusion(rankings: RankedChunk[][], rankConstant = 60): RankedChunk[] {
+  return weightedReciprocalRankFusion(
+    rankings.map((hits) => ({ hits, weight: 1 })),
+    rankConstant,
+  );
+}
+
+export function weightedReciprocalRankFusion(
+  rankings: WeightedRanking[],
+  rankConstant = 60,
+): RankedChunk[] {
   const scores = new Map<string, number>();
   for (const ranking of rankings) {
-    ranking.forEach((hit, index) => {
-      scores.set(hit.id, (scores.get(hit.id) ?? 0) + 1 / (rankConstant + index + 1));
+    if (ranking.weight <= 0) continue;
+    ranking.hits.forEach((hit, index) => {
+      scores.set(hit.id, (scores.get(hit.id) ?? 0) + ranking.weight / (rankConstant + index + 1));
     });
   }
   return [...scores.entries()]

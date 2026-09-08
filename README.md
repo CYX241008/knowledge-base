@@ -33,7 +33,7 @@ PDF 摄取会按页识别原生文本、扫描页和图文混排页，恢复文�
 
 处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。解析质量标记为 `review` 的版本会被后端禁止直接发布，必须经过审核，并在批准时填写质量风险确认说明。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
 
-检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合。进入付费 Reranker 前会先按内容哈希删除完全重复项、限制单文档分片数，并按独立候选数和 Token 预算打包；重排后再合并相邻分片、过滤同来源近重复项并使用 MMR 降低冗余。`RAG_RERANK_CANDIDATE_LIMIT`、`RAG_RERANK_MAX_TOKENS`、`RAG_MAX_CHUNKS_PER_DOCUMENT` 控制重排成本，`RAG_NEAR_DUPLICATE_THRESHOLD` 和 `RAG_MMR_LAMBDA` 控制后续整理。查询只使用与当前 `EMBEDDING_MODEL` 一致的向量，避免同维度模型切换时混用不兼容向量。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
+检索阶段先把查询分类为精确、事实、对比或分析意图，生成最多 4 个规范化、关键词化或拆分子查询，并动态调整候选窗口与问答证据 K。精确查询提高关键词权重并缩小窗口，对比和分析查询扩大窗口；直接搜索仍严格保持用户请求的分页大小。各查询变体先在 Elasticsearch 与 pgvector 通道内以加权 RRF 融合，再进行跨通道融合。进入付费 Reranker 前会先按内容哈希删除完全重复项、限制单文档分片数，并按独立候选数和 Token 预算打包；重排后再合并相邻分片、过滤同来源近重复项并使用 MMR 降低冗余。查询规划详情会写入诊断响应及 `search_query_event.filters.queryPlan`，可通过 `RAG_QUERY_PLANNING_ENABLED=false` 回退到单查询和固定窗口。`RAG_RERANK_CANDIDATE_LIMIT`、`RAG_RERANK_MAX_TOKENS`、`RAG_MAX_CHUNKS_PER_DOCUMENT` 控制重排成本，`RAG_NEAR_DUPLICATE_THRESHOLD` 和 `RAG_MMR_LAMBDA` 控制后续整理。查询只使用与当前 `EMBEDDING_MODEL` 一致的向量，避免同维度模型切换时混用不兼容向量。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
 
 版本审核绑定不可变的 `document_version`。文档管理员可以提交或撤回待审版本；拥有 `documents.review` 的审核员可以查看租户待办、批准或驳回。批准会在同一 PostgreSQL 事务中结案审核、切换发布版本、记录审计并写入搜索投影 Outbox。
 
@@ -116,6 +116,12 @@ pnpm eval:export-feedback -- --days=30 --limit=100
 
 ```bash
 pnpm e2e:answer-feedback
+```
+
+查询分类、对比拆分、候选窗口和动态证据 K 的端到端验收：
+
+```bash
+pnpm e2e:query-planning
 ```
 
 运行 PDF 类型、文本、表格、视觉描述和引用坐标专项评测：

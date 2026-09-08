@@ -73,4 +73,21 @@ describe('ElasticsearchChunkIndex', () => {
     ]);
     expect(String(fetcher.mock.calls[3]?.[1]?.body)).toContain('"document_status":"published"');
   });
+
+  it('checks the index once before searching multiple query variants', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ hits: { hits: [] } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ hits: { hits: [] } }), { status: 200 }));
+    const index = new ElasticsearchChunkIndex('http://search:9200', 'chunks', fetcher);
+
+    await expect(
+      index.searchMany('tenant-1', ['user-1'], ['original query', 'rewritten query'], 10),
+    ).resolves.toEqual([[], []]);
+
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher.mock.calls.filter((call) => call[1]?.method === 'HEAD')).toHaveLength(1);
+  });
 });

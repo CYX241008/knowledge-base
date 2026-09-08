@@ -199,6 +199,22 @@ describe('reliable queue contracts', () => {
         ...response,
         diagnostics: {
           candidateLimit: 200,
+          queryPlan: {
+            version: 'query-planner-v1',
+            enabled: true,
+            intent: 'comparison',
+            variants: [
+              { text: 'Product X and Product Y', kind: 'original', weight: 1, useVector: true },
+              { text: 'Product X', kind: 'subquery', weight: 0.85, useVector: true },
+              { text: 'Product Y', kind: 'subquery', weight: 0.85, useVector: true },
+            ],
+            baseCandidateLimit: 200,
+            candidateLimit: 300,
+            requestedResultLimit: 10,
+            resultLimit: 10,
+            keywordWeight: 1,
+            vectorWeight: 1.2,
+          },
           scoreThreshold: 0.2,
           mmrLambda: 0.7,
           nearDuplicateThreshold: 0.92,

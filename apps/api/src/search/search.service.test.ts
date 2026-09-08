@@ -4,6 +4,7 @@ import {
   prepareRerankCandidates,
   reciprocalRankFusion,
   SearchService,
+  weightedReciprocalRankFusion,
 } from './search.service';
 
 describe('reciprocalRankFusion', () => {
@@ -22,6 +23,30 @@ describe('reciprocalRankFusion', () => {
     expect(result[0]?.id).toBe('shared');
     expect(result).toHaveLength(3);
   });
+
+  it('applies channel weights while still rewarding shared results', () => {
+    const result = weightedReciprocalRankFusion([
+      {
+        weight: 2,
+        hits: [
+          { id: 'keyword-first', score: 9 },
+          { id: 'shared', score: 8 },
+        ],
+      },
+      {
+        weight: 0.5,
+        hits: [
+          { id: 'vector-first', score: 0.9 },
+          { id: 'shared', score: 0.8 },
+        ],
+      },
+    ]);
+
+    expect(result[0]?.id).toBe('shared');
+    expect(result.findIndex((item) => item.id === 'keyword-first')).toBeLessThan(
+      result.findIndex((item) => item.id === 'vector-first'),
+    );
+  });
 });
 
 describe('search candidate policy', () => {
@@ -35,12 +60,13 @@ describe('search candidate policy', () => {
 describe('SearchService publication filtering', () => {
   it('requires published documents in vector retrieval', async () => {
     const queries: string[] = [];
+    const saveQueryEvent = vi.fn(async () => undefined);
     const dataSource = {
       query: vi.fn(async (sql: string) => {
         queries.push(sql);
         return [];
       }),
-      getRepository: vi.fn(() => ({ save: vi.fn(async () => undefined) })),
+      getRepository: vi.fn(() => ({ save: saveQueryEvent })),
     };
     const values: Record<string, unknown> = {
       EMBEDDING_MODEL: 'local-hash-v1',
@@ -91,11 +117,11 @@ describe('SearchService publication filtering', () => {
     (
       service as unknown as {
         keywordIndex: {
-          search: (...args: unknown[]) => Promise<Array<{ id: string; score: number }>>;
+          searchMany: (...args: unknown[]) => Promise<Array<Array<{ id: string; score: number }>>>;
         };
       }
     ).keywordIndex = {
-      search: vi.fn(async () => [] as Array<{ id: string; score: number }>),
+      searchMany: vi.fn(async () => [[]] as Array<Array<{ id: string; score: number }>>),
     };
 
     await service.search({
@@ -109,6 +135,17 @@ describe('SearchService publication filtering', () => {
 
     expect(queries[0]).toContain("document.status = 'published'");
     expect(queries[0]).toContain('chunk.embedding_model = $8');
+    expect(saveQueryEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          queryPlan: expect.objectContaining({
+            version: 'query-planner-v1',
+            enabled: true,
+            intent: 'fact',
+          }),
+        }),
+      }),
+    );
   });
 });
 
@@ -185,14 +222,14 @@ describe('SearchService MMR diversification', () => {
     (
       service as unknown as {
         keywordIndex: {
-          search: (...args: unknown[]) => Promise<Array<{ id: string; score: number }>>;
+          searchMany: (...args: unknown[]) => Promise<Array<Array<{ id: string; score: number }>>>;
         };
         reranker: {
           rerank: () => Promise<Array<{ id: string; score: number }>>;
         };
       }
     ).keywordIndex = {
-      search: vi.fn(async () => []),
+      searchMany: vi.fn(async () => [[]]),
     };
     (
       service as unknown as {

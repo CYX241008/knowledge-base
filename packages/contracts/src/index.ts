@@ -389,8 +389,36 @@ export const SearchDiagnosticsStageSchema = z.object({
 });
 export type SearchDiagnosticsStage = z.infer<typeof SearchDiagnosticsStageSchema>;
 
+export const SearchQueryIntentSchema = z.enum(['exact', 'fact', 'comparison', 'analysis']);
+export type SearchQueryIntent = z.infer<typeof SearchQueryIntentSchema>;
+
+export const SearchQueryPlanSchema = z.object({
+  version: z.literal('query-planner-v1'),
+  enabled: z.boolean(),
+  intent: SearchQueryIntentSchema,
+  variants: z
+    .array(
+      z.object({
+        text: z.string(),
+        kind: z.enum(['original', 'normalized', 'keyword', 'subquery', 'exact']),
+        weight: z.number().positive(),
+        useVector: z.boolean(),
+      }),
+    )
+    .min(1)
+    .max(4),
+  baseCandidateLimit: z.number().int().positive(),
+  candidateLimit: z.number().int().positive(),
+  requestedResultLimit: z.number().int().positive(),
+  resultLimit: z.number().int().positive(),
+  keywordWeight: z.number().positive(),
+  vectorWeight: z.number().positive(),
+});
+export type SearchQueryPlan = z.infer<typeof SearchQueryPlanSchema>;
+
 export const SearchDiagnosticsSchema = z.object({
   candidateLimit: z.number().int().positive(),
+  queryPlan: SearchQueryPlanSchema.optional(),
   scoreThreshold: z.number().nonnegative(),
   mmrLambda: z.number().min(0).max(1),
   nearDuplicateThreshold: z.number().min(0).max(1),
@@ -611,6 +639,7 @@ export const SystemRuntimeConfigurationSchema = z.object({
   rerankerModel: z.string(),
   mmrLambda: z.number().min(0).max(1),
   nearDuplicateThreshold: z.number().min(0).max(1),
+  queryPlanningEnabled: z.boolean(),
   modelRequestTimeoutMs: z.number().int().positive(),
   modelRequestsPerMinute: z.number().int().nonnegative(),
   modelGlobalTokensPerMinute: z.number().int().nonnegative(),

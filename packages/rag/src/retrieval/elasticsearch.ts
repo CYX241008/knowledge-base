@@ -151,7 +151,29 @@ export class ElasticsearchChunkIndex {
     limit: number,
     filters: KeywordSearchFilters = {},
   ): Promise<KeywordSearchHit[]> {
+    return (await this.searchMany(tenantId, principalIds, [text], limit, filters))[0] ?? [];
+  }
+
+  async searchMany(
+    tenantId: string,
+    principalIds: string[],
+    texts: string[],
+    limit: number,
+    filters: KeywordSearchFilters = {},
+  ): Promise<KeywordSearchHit[][]> {
     await this.ensureIndex();
+    return Promise.all(
+      texts.map((text) => this.searchPrepared(tenantId, principalIds, text, limit, filters)),
+    );
+  }
+
+  private async searchPrepared(
+    tenantId: string,
+    principalIds: string[],
+    text: string,
+    limit: number,
+    filters: KeywordSearchFilters,
+  ): Promise<KeywordSearchHit[]> {
     const filter: Record<string, unknown>[] = [
       { term: { tenant_id: tenantId } },
       { terms: { principal_ids: principalIds } },
