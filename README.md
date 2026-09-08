@@ -29,7 +29,9 @@ PDF 摄取会按页识别原生文本、扫描页和图文混排页，恢复文�
 
 知识问答使用受控文档工具规划：固定先执行 `search_document`，再根据问题中的页码、幻灯片、章节、Sheet range、表格比较或图表意图按需执行 `read_location`、`read_page`、`read_range`、`get_table`、`inspect_figure` 和 `get_source`。工具调用轨迹保存在 `answer_run.tool_trace`。引用面板会按 PDF 页面、PPTX 幻灯片、DOCX/Markdown 章节或 XLSX range 展示对应结构化内容。OCR 与视觉步骤按来源位置记录耗时、状态、提供商、模型和缓存命中；视觉模型的 token 与成本继续记录在 `model_usage_event`。
 
-处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
+生成完成后会校验回答中的 `[n]` 或 `【n】` 引用编号，只保留回答实际使用且指向当前证据的引用。缺少引用、引用越界或回答只有引用标记时，结果会降级为不可验证的拒答，并以 `grounded=false` 持久化。
+
+处理任务最多自动执行 3 次并使用指数退避。BullMQ jobId 由版本 ID 和任务代次组成；最终失败会写入死信时间，失败版本可通过 API 或 Web 原地重试。版本处理完成只会进入 `ready`，不会自动成为线上版本；只有具备审核权限的直接发布或审核批准会原子切换 `current_ready_version_id`。解析质量标记为 `review` 的版本会被后端禁止直接发布，必须经过审核，并在批准时填写质量风险确认说明。删除文档会先归档，再由独立队列清理 MinIO 对象、来源锚点和资产投影。
 
 检索阶段使用 Elasticsearch 关键词召回和 pgvector 向量召回，以 RRF 融合。进入付费 Reranker 前会先按内容哈希删除完全重复项、限制单文档分片数，并按独立候选数和 Token 预算打包；重排后再合并相邻分片、过滤同来源近重复项并使用 MMR 降低冗余。`RAG_RERANK_CANDIDATE_LIMIT`、`RAG_RERANK_MAX_TOKENS`、`RAG_MAX_CHUNKS_PER_DOCUMENT` 控制重排成本，`RAG_NEAR_DUPLICATE_THRESHOLD` 和 `RAG_MMR_LAMBDA` 控制后续整理。查询只使用与当前 `EMBEDDING_MODEL` 一致的向量，避免同维度模型切换时混用不兼容向量。默认 `local-hash-v1`、`local-lexical-v1` 和 `local-extractive-v1` 是无需密钥、可重复验收的开发基线，不具备跨语言语义能力；生产环境应配置 `MODEL_PROVIDER=openai-compatible` 和真实 Embedding/Chat 模型，按需将 `RERANKER_PROVIDER` 切换为 HTTP 服务。
 

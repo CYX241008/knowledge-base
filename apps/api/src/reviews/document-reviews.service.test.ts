@@ -5,6 +5,7 @@ import {
   DocumentReviewRequestEntity,
   DocumentVersionEntity,
 } from '@knowledge-base/database';
+import { BadRequestException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../auth/auth-context';
 import { DocumentReviewsService } from './document-reviews.service';
@@ -68,7 +69,11 @@ describe('DocumentReviewsService', () => {
 
   it('atomically switches the published version only when a review is approved', async () => {
     const document = publishedDocument();
-    const version = readyVersion();
+    const version = readyVersion({
+      qualityStatus: 'review',
+      qualityScore: 68,
+      qualityReasons: ['One scanned page requires manual confirmation'],
+    });
     const review = {
       id: reviewId,
       tenantId: auth.tenantId,
@@ -125,6 +130,57 @@ describe('DocumentReviewsService', () => {
     );
     expect(ingestion.dispatchPending).toHaveBeenCalledOnce();
   });
+
+  it('requires an approval comment for a version with quality warnings', async () => {
+    const document = publishedDocument();
+    const version = readyVersion({
+      qualityStatus: 'review',
+      qualityScore: 68,
+      qualityReasons: ['One scanned page requires manual confirmation'],
+    });
+    const review = {
+      id: reviewId,
+      tenantId: auth.tenantId,
+      documentId,
+      documentVersionId: nextVersionId,
+      status: 'pending' as const,
+      submittedBy: auth.userId,
+      submittedAt: new Date(),
+      resolvedBy: null,
+      resolvedAt: null,
+      decisionComment: null,
+    };
+    const manager = fakeManager(
+      new Map<unknown, unknown>([
+        [DocumentReviewRequestEntity, { findOne: vi.fn(async () => review), save: vi.fn() }],
+        [DocumentVersionEntity, { findOne: vi.fn(async () => version) }],
+        [DocumentEntity, { findOne: vi.fn(async () => document), save: vi.fn() }],
+        [DocumentReviewActionEntity, { save: vi.fn() }],
+      ]),
+    );
+    const ingestion = {
+      createSearchProjectionIntent: vi.fn(),
+      dispatchPending: vi.fn(),
+    };
+    const service = new DocumentReviewsService(
+      { transaction: vi.fn(async (callback) => callback(manager)) } as never,
+      {
+        assertDocumentReview: vi.fn(),
+        recordAudit: vi.fn(),
+      } as never,
+      ingestion as never,
+    );
+
+    await expectBadRequest(
+      service.approve(auth, reviewId, null),
+      'DOCUMENT_QUALITY_APPROVAL_COMMENT_REQUIRED',
+    );
+
+    expect(review.status).toBe('pending');
+    expect(document.currentReadyVersionId).toBe(oldVersionId);
+    expect(ingestion.createSearchProjectionIntent).not.toHaveBeenCalled();
+    expect(ingestion.dispatchPending).not.toHaveBeenCalled();
+  });
 });
 
 function publishedDocument() {
@@ -138,7 +194,7 @@ function publishedDocument() {
   };
 }
 
-function readyVersion() {
+function readyVersion(overrides: Record<string, unknown> = {}) {
   return {
     id: nextVersionId,
     tenantId: auth.tenantId,
@@ -146,6 +202,10 @@ function readyVersion() {
     versionNo: 2,
     sourceFilename: 'version-2.md',
     ingestionStatus: 'ready' as const,
+    qualityStatus: 'pass' as const,
+    qualityScore: 100,
+    qualityReasons: [],
+    ...overrides,
   };
 }
 
@@ -160,4 +220,14 @@ function fakeManager(repositories: Map<unknown, unknown>) {
       return repository;
     }),
   };
+}
+
+async function expectBadRequest(promise: Promise<unknown>, code: string): Promise<void> {
+  try {
+    await promise;
+    throw new Error(`Expected BadRequestException with code ${code}`);
+  } catch (error) {
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).getResponse()).toMatchObject({ code });
+  }
 }

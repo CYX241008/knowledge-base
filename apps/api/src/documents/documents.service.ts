@@ -295,6 +295,14 @@ export class DocumentsService {
           message: 'Only a ready document version can be published',
         });
       }
+      if (version.qualityStatus === 'review') {
+        throw new BadRequestException({
+          code: 'DOCUMENT_QUALITY_REVIEW_REQUIRED',
+          message: 'This document version requires quality review before publication',
+          qualityScore: version.qualityScore,
+          qualityReasons: version.qualityReasons ?? [],
+        });
+      }
       const pendingReview = await manager.getRepository(DocumentReviewRequestEntity).findOne({
         where: { tenantId, documentId, status: 'pending' },
         lock: { mode: 'pessimistic_read' },

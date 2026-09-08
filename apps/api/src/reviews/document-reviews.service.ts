@@ -176,6 +176,15 @@ export class DocumentReviewsService {
           message: 'Only a ready document version can be approved',
         });
       }
+      const decisionComment = comment?.trim() || null;
+      if (version.qualityStatus === 'review' && !decisionComment) {
+        throw new BadRequestException({
+          code: 'DOCUMENT_QUALITY_APPROVAL_COMMENT_REQUIRED',
+          message: 'Approving a document with quality warnings requires a review comment',
+          qualityScore: version.qualityScore,
+          qualityReasons: version.qualityReasons ?? [],
+        });
+      }
       const document = await manager.getRepository(DocumentEntity).findOne({
         where: { id: review.documentId, tenantId: auth.tenantId, deletedAt: IsNull() },
         lock: { mode: 'pessimistic_write' },
@@ -189,7 +198,7 @@ export class DocumentReviewsService {
       }
 
       const previousVersionId = document.currentReadyVersionId;
-      await this.resolveRequest(manager, review, auth, 'approved', 'approved', comment);
+      await this.resolveRequest(manager, review, auth, 'approved', 'approved', decisionComment);
       document.currentReadyVersionId = version.id;
       document.status = 'published';
       document.updatedBy = auth.userId;
@@ -209,7 +218,10 @@ export class DocumentReviewsService {
           documentVersionId: version.id,
           versionNo: version.versionNo,
           previousDocumentVersionId: previousVersionId,
-          comment,
+          qualityStatus: version.qualityStatus,
+          qualityScore: version.qualityScore,
+          qualityReasons: version.qualityReasons,
+          comment: decisionComment,
         },
       );
     });

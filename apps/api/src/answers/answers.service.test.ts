@@ -13,6 +13,7 @@ import {
   AnswersService,
   buildGroundedPrompt,
   localExtractiveAnswer,
+  validateGroundedAnswer,
 } from './answers.service';
 
 const hit: SearchDocumentHit = {
@@ -110,6 +111,62 @@ describe('grounded answer helpers', () => {
     expect(localExtractiveAnswer([hit])).toBe('混合检索结合向量召回和关键词召回。 [1]');
   });
 
+  it('keeps only evidence that the answer actually cites', () => {
+    const second = {
+      ...hit,
+      chunkId: '66666666-6666-4666-8666-666666666666',
+      title: '重排设计',
+      content: '重排模型对粗召回结果进行二次排序。',
+    };
+
+    expect(validateGroundedAnswer('应先进行粗召回，再执行重排。【2】', [hit, second])).toEqual({
+      grounded: true,
+      citations: [
+        expect.objectContaining({
+          ordinal: 2,
+          chunkId: second.chunkId,
+        }),
+      ],
+      referencedOrdinals: [2],
+      invalidOrdinals: [],
+      failureReason: null,
+    });
+  });
+
+  it('rejects answers with missing or invalid citation markers', () => {
+    expect(validateGroundedAnswer('混合检索结合两种召回方式。', [hit])).toMatchObject({
+      grounded: false,
+      citations: [],
+      failureReason: 'missing_citations',
+    });
+    expect(validateGroundedAnswer('混合检索结合两种召回方式。[2]', [hit])).toMatchObject({
+      grounded: false,
+      citations: [],
+      referencedOrdinals: [2],
+      invalidOrdinals: [2],
+      failureReason: 'invalid_citations',
+    });
+  });
+
+  it('accepts grouped citations without duplicating evidence', () => {
+    const second = {
+      ...hit,
+      chunkId: '66666666-6666-4666-8666-666666666666',
+      title: '重排设计',
+    };
+
+    expect(
+      validateGroundedAnswer('结论由两段证据共同支持。[1, 2][1]', [hit, second]),
+    ).toMatchObject({
+      grounded: true,
+      referencedOrdinals: [1, 2],
+      citations: [
+        { ordinal: 1, chunkId: hit.chunkId },
+        { ordinal: 2, chunkId: second.chunkId },
+      ],
+    });
+  });
+
   it('selects the sentence that best matches the question', () => {
     expect(
       localExtractiveAnswer(
@@ -177,6 +234,88 @@ describe('AnswersService answer run lifecycle', () => {
       assistantMessageId: done?.type === 'done' ? done.response.messageId : undefined,
     });
     expect(harness.runs[0]?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('persists only citations used by a generated answer', async () => {
+    const second = {
+      ...hit,
+      chunkId: '66666666-6666-4666-8666-666666666666',
+      title: '重排设计',
+      content: '重排模型对粗召回结果进行二次排序。',
+    };
+    const harness = answerHarness(async () => ({
+      hits: [hit, second],
+      total: 2,
+      page: 1,
+      pageSize: 6,
+    }));
+    const streamChat = vi.fn(async function* () {
+      yield '应先进行粗召回，再执行重排。[2]';
+    });
+    (
+      harness.service as unknown as {
+        chatGateway: { streamChat: typeof streamChat };
+      }
+    ).chatGateway = { streamChat };
+
+    const events = [];
+    for await (const event of harness.service.streamAnswer(auth, {
+      question: '如何执行检索？',
+      limit: 6,
+    })) {
+      events.push(event);
+    }
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done).toMatchObject({
+      type: 'done',
+      response: {
+        grounded: true,
+        citations: [{ ordinal: 2, chunkId: second.chunkId }],
+      },
+    });
+    expect(harness.citations).toEqual([
+      expect.objectContaining({ ordinal: 2, chunkId: second.chunkId }),
+    ]);
+  });
+
+  it('replaces a generated answer that does not contain a valid citation', async () => {
+    const harness = answerHarness(async () => ({
+      hits: [hit],
+      total: 1,
+      page: 1,
+      pageSize: 6,
+    }));
+    const streamChat = vi.fn(async function* () {
+      yield '混合检索结合两种召回方式，但这里没有引用。';
+    });
+    (
+      harness.service as unknown as {
+        chatGateway: { streamChat: typeof streamChat };
+      }
+    ).chatGateway = { streamChat };
+
+    const events = [];
+    for await (const event of harness.service.streamAnswer(auth, {
+      question: '如何执行检索？',
+      limit: 6,
+    })) {
+      events.push(event);
+    }
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done).toMatchObject({
+      type: 'done',
+      response: {
+        grounded: false,
+        citations: [],
+        answer: '当前回答未能通过引用校验，无法确认内容有知识库证据支持。',
+      },
+    });
+    expect(harness.citations).toEqual([]);
+    expect(harness.messages.at(-1)?.content).toBe(
+      '当前回答未能通过引用校验，无法确认内容有知识库证据支持。',
+    );
   });
 
   it('marks the run failed when retrieval throws', async () => {
@@ -291,6 +430,7 @@ function answerHarness(
 ) {
   const messages: Array<Record<string, unknown>> = [];
   const runs: Array<Record<string, unknown>> = [];
+  const citations: Array<Record<string, unknown>> = [];
   const repositories = new Map<unknown, Record<string, unknown>>();
   const simpleRepository = (saved: Array<Record<string, unknown>>) => ({
     create: vi.fn((value: Record<string, unknown>) => value),
@@ -308,7 +448,7 @@ function answerHarness(
     ...simpleRepository(messages),
     find: vi.fn(async () => [...messages].reverse()),
   });
-  repositories.set(ChatCitationEntity, simpleRepository([]));
+  repositories.set(ChatCitationEntity, simpleRepository(citations));
   repositories.set(AnswerRunEntity, {
     ...simpleRepository(runs),
     update: vi.fn(
@@ -380,5 +520,5 @@ function answerHarness(
     undefined,
     budget as never,
   );
-  return { service, messages, runs };
+  return { service, messages, runs, citations };
 }
